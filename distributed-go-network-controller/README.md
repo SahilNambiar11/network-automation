@@ -69,6 +69,20 @@ curl -X POST --data-binary @examples/valid-network.yaml http://localhost:8080/va
 
 Invalid configs return `200 OK` with structured validation errors. Malformed YAML returns `400 Bad Request`.
 
+## Create A Deployment
+
+```sh
+curl -X POST http://localhost:8080/deployments \
+  --data-binary @examples/valid-network.yaml
+```
+
+Then inspect persisted records:
+
+```sh
+curl http://localhost:8080/deployments
+curl http://localhost:8080/jobs
+```
+
 ## Scale Workers
 
 ```sh

@@ -1,0 +1,69 @@
+package jobs
+
+import (
+	"context"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/example/distributed-go-network-controller/backend/internal/devices"
+)
+
+func TestRepositoryCreateDeployment(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	rawConfig := "devices:\n  - name: core-router\n    type: router\n"
+
+	mock.ExpectQuery("INSERT INTO deployments").
+		WithArgs(DeploymentStatusPending, rawConfig).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("deployment-1"))
+
+	deploymentID, err := repository.CreateDeployment(context.Background(), rawConfig)
+	if err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	if deploymentID != "deployment-1" {
+		t.Fatalf("expected deployment id deployment-1, got %q", deploymentID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryCreateJobsForDeployment(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	devicesList := []devices.Device{
+		{Name: "core-router", Type: "router"},
+		{Name: "access-switch", Type: "switch"},
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare("INSERT INTO jobs").
+		ExpectExec().
+		WithArgs("deployment-1", "core-router", "router", JobStatusPending).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO jobs").
+		WithArgs("deployment-1", "access-switch", "switch", JobStatusPending).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := repository.CreateJobsForDeployment(context.Background(), "deployment-1", devicesList); err != nil {
+		t.Fatalf("create jobs for deployment: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
