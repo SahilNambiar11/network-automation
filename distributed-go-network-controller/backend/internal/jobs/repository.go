@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +12,14 @@ import (
 
 const (
 	DeploymentStatusPending = "pending"
+	DeploymentStatusRunning = "running"
+	DeploymentStatusSuccess = "success"
+	DeploymentStatusFailed  = "failed"
+	DeploymentStatusPartial = "partial"
 	JobStatusPending        = "pending"
+	JobStatusRunning        = "running"
+	JobStatusSuccess        = "success"
+	JobStatusFailed         = "failed"
 )
 
 type Repository struct {
@@ -84,6 +92,141 @@ func (r *Repository) CreateJobsForDeployment(ctx context.Context, deploymentID s
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit create jobs transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) ClaimNextPendingJob(ctx context.Context, workerID string) (*Job, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin claim job transaction: %w", err)
+	}
+
+	row := tx.QueryRowContext(ctx, `
+		WITH next_job AS (
+			SELECT id
+			FROM jobs
+			WHERE status = $1
+			ORDER BY created_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs
+		SET status = $2,
+			claimed_by = $3,
+			started_at = now(),
+			attempts = attempts + 1
+		FROM next_job
+		WHERE jobs.id = next_job.id
+		RETURNING jobs.id, jobs.deployment_id, jobs.device_name, jobs.device_type, jobs.status,
+			jobs.attempts, jobs.max_attempts, jobs.claimed_by, jobs.lease_expires_at,
+			jobs.started_at, jobs.completed_at, jobs.error, jobs.created_at
+	`, JobStatusPending, JobStatusRunning, workerID)
+
+	job, err := scanJob(row)
+	if err != nil {
+		_ = tx.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("claim next pending job: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit claim job transaction: %w", err)
+	}
+
+	return &job, nil
+}
+
+func (r *Repository) CompleteJob(ctx context.Context, jobID string, status string, errMsg string) error {
+	if status != JobStatusSuccess && status != JobStatusFailed {
+		return fmt.Errorf("unsupported job completion status %q", status)
+	}
+
+	var errorValue any
+	if status == JobStatusFailed {
+		errorValue = errMsg
+	}
+
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET status = $1,
+			completed_at = now(),
+			error = $2
+		WHERE id = $3
+	`, status, errorValue, jobID); err != nil {
+		return fmt.Errorf("complete job %s: %w", jobID, err)
+	}
+
+	return nil
+}
+
+func (r *Repository) UpdateDeploymentStatus(ctx context.Context, deploymentID string) error {
+	var totalJobs int
+	var successJobs int
+	var failedJobs int
+	var runningJobs int
+	var pendingJobs int
+
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE status = $1),
+			COUNT(*) FILTER (WHERE status = $2),
+			COUNT(*) FILTER (WHERE status = $3),
+			COUNT(*) FILTER (WHERE status = $4)
+		FROM jobs
+		WHERE deployment_id = $5
+	`, JobStatusSuccess, JobStatusFailed, JobStatusRunning, JobStatusPending, deploymentID).Scan(
+		&totalJobs,
+		&successJobs,
+		&failedJobs,
+		&runningJobs,
+		&pendingJobs,
+	); err != nil {
+		return fmt.Errorf("count jobs for deployment %s: %w", deploymentID, err)
+	}
+
+	status := DeploymentStatusPending
+	completed := false
+	switch {
+	case totalJobs > 0 && successJobs == totalJobs:
+		status = DeploymentStatusSuccess
+		completed = true
+	case failedJobs > 0 && pendingJobs == 0 && runningJobs == 0:
+		if successJobs > 0 {
+			status = DeploymentStatusPartial
+		} else {
+			status = DeploymentStatusFailed
+		}
+		completed = true
+	case runningJobs > 0:
+		status = DeploymentStatusRunning
+	case pendingJobs > 0 && (successJobs > 0 || failedJobs > 0):
+		status = DeploymentStatusRunning
+	}
+
+	if completed {
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE deployments
+			SET status = $1,
+				completed_at = now()
+			WHERE id = $2
+		`, status, deploymentID); err != nil {
+			return fmt.Errorf("update completed deployment %s status: %w", deploymentID, err)
+		}
+		return nil
+	}
+
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE deployments
+		SET status = $1,
+			completed_at = NULL
+		WHERE id = $2
+	`, status, deploymentID); err != nil {
+		return fmt.Errorf("update deployment %s status: %w", deploymentID, err)
 	}
 
 	return nil
@@ -190,36 +333,10 @@ func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 func scanJobs(rows *sql.Rows) ([]Job, error) {
 	var jobs []Job
 	for rows.Next() {
-		var job Job
-		var claimedBy sql.NullString
-		var leaseExpiresAt sql.NullTime
-		var startedAt sql.NullTime
-		var completedAt sql.NullTime
-		var jobError sql.NullString
-
-		if err := rows.Scan(
-			&job.ID,
-			&job.DeploymentID,
-			&job.DeviceName,
-			&job.DeviceType,
-			&job.Status,
-			&job.Attempts,
-			&job.MaxAttempts,
-			&claimedBy,
-			&leaseExpiresAt,
-			&startedAt,
-			&completedAt,
-			&jobError,
-			&job.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan job: %w", err)
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		job.ClaimedBy = nullableString(claimedBy)
-		job.LeaseExpiresAt = nullableTime(leaseExpiresAt)
-		job.StartedAt = nullableTime(startedAt)
-		job.CompletedAt = nullableTime(completedAt)
-		job.Error = nullableString(jobError)
 		jobs = append(jobs, job)
 	}
 
@@ -228,6 +345,45 @@ func scanJobs(rows *sql.Rows) ([]Job, error) {
 	}
 
 	return jobs, nil
+}
+
+type jobScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanJob(scanner jobScanner) (Job, error) {
+	var job Job
+	var claimedBy sql.NullString
+	var leaseExpiresAt sql.NullTime
+	var startedAt sql.NullTime
+	var completedAt sql.NullTime
+	var jobError sql.NullString
+
+	if err := scanner.Scan(
+		&job.ID,
+		&job.DeploymentID,
+		&job.DeviceName,
+		&job.DeviceType,
+		&job.Status,
+		&job.Attempts,
+		&job.MaxAttempts,
+		&claimedBy,
+		&leaseExpiresAt,
+		&startedAt,
+		&completedAt,
+		&jobError,
+		&job.CreatedAt,
+	); err != nil {
+		return Job{}, err
+	}
+
+	job.ClaimedBy = nullableString(claimedBy)
+	job.LeaseExpiresAt = nullableTime(leaseExpiresAt)
+	job.StartedAt = nullableTime(startedAt)
+	job.CompletedAt = nullableTime(completedAt)
+	job.Error = nullableString(jobError)
+
+	return job, nil
 }
 
 func nullableString(value sql.NullString) *string {
