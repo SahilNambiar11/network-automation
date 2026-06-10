@@ -164,6 +164,50 @@ func TestRepositoryCompleteJob(t *testing.T) {
 	}
 }
 
+func TestRepositoryCompleteJobTimeout(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectExec("UPDATE jobs").
+		WithArgs(JobStatusTimeout, "deployment timed out", "job-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.CompleteJob(context.Background(), "job-1", JobStatusTimeout, "deployment timed out"); err != nil {
+		t.Fatalf("complete timeout job: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryRetryJob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectExec("UPDATE jobs").
+		WithArgs(JobStatusPending, "temporary failure", "job-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.RetryJob(context.Background(), "job-1", "temporary failure"); err != nil {
+		t.Fatalf("retry job: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestRepositoryUpdateDeploymentStatusSuccess(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -174,7 +218,7 @@ func TestRepositoryUpdateDeploymentStatusSuccess(t *testing.T) {
 	repository := NewRepository(db)
 
 	mock.ExpectQuery("SELECT").
-		WithArgs(JobStatusSuccess, JobStatusFailed, JobStatusRunning, JobStatusPending, "deployment-1").
+		WithArgs(JobStatusSuccess, JobStatusFailed, JobStatusTimeout, JobStatusRunning, JobStatusPending, "deployment-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"count",
 			"success_count",
@@ -192,5 +236,100 @@ func TestRepositoryUpdateDeploymentStatusSuccess(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryUpdateDeploymentStatusPartial(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectQuery("SELECT").
+		WithArgs(JobStatusSuccess, JobStatusFailed, JobStatusTimeout, JobStatusRunning, JobStatusPending, "deployment-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"count",
+			"success_count",
+			"failed_count",
+			"running_count",
+			"pending_count",
+		}).AddRow(3, 1, 2, 0, 0))
+	mock.ExpectExec("UPDATE deployments").
+		WithArgs(DeploymentStatusPartial, "deployment-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.UpdateDeploymentStatus(context.Background(), "deployment-1"); err != nil {
+		t.Fatalf("update deployment status: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryUpdateDeploymentStatusFailed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectQuery("SELECT").
+		WithArgs(JobStatusSuccess, JobStatusFailed, JobStatusTimeout, JobStatusRunning, JobStatusPending, "deployment-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"count",
+			"success_count",
+			"failed_count",
+			"running_count",
+			"pending_count",
+		}).AddRow(2, 0, 2, 0, 0))
+	mock.ExpectExec("UPDATE deployments").
+		WithArgs(DeploymentStatusFailed, "deployment-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.UpdateDeploymentStatus(context.Background(), "deployment-1"); err != nil {
+		t.Fatalf("update deployment status: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestDeploymentStatusFromCountsSuccess(t *testing.T) {
+	status, completed := deploymentStatusFromCounts(2, 2, 0, 0, 0)
+
+	if status != DeploymentStatusSuccess {
+		t.Fatalf("expected status success, got %q", status)
+	}
+	if !completed {
+		t.Fatalf("expected deployment to be completed")
+	}
+}
+
+func TestDeploymentStatusFromCountsPartial(t *testing.T) {
+	status, completed := deploymentStatusFromCounts(2, 1, 1, 0, 0)
+
+	if status != DeploymentStatusPartial {
+		t.Fatalf("expected status partial, got %q", status)
+	}
+	if !completed {
+		t.Fatalf("expected deployment to be completed")
+	}
+}
+
+func TestDeploymentStatusFromCountsRunning(t *testing.T) {
+	status, completed := deploymentStatusFromCounts(2, 1, 0, 0, 1)
+
+	if status != DeploymentStatusRunning {
+		t.Fatalf("expected status running, got %q", status)
+	}
+	if completed {
+		t.Fatalf("expected deployment to remain incomplete")
 	}
 }

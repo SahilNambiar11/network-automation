@@ -20,6 +20,7 @@ const (
 	JobStatusRunning        = "running"
 	JobStatusSuccess        = "success"
 	JobStatusFailed         = "failed"
+	JobStatusTimeout        = "timeout"
 )
 
 type Repository struct {
@@ -141,12 +142,12 @@ func (r *Repository) ClaimNextPendingJob(ctx context.Context, workerID string) (
 }
 
 func (r *Repository) CompleteJob(ctx context.Context, jobID string, status string, errMsg string) error {
-	if status != JobStatusSuccess && status != JobStatusFailed {
+	if status != JobStatusSuccess && status != JobStatusFailed && status != JobStatusTimeout {
 		return fmt.Errorf("unsupported job completion status %q", status)
 	}
 
 	var errorValue any
-	if status == JobStatusFailed {
+	if status == JobStatusFailed || status == JobStatusTimeout {
 		errorValue = errMsg
 	}
 
@@ -163,6 +164,22 @@ func (r *Repository) CompleteJob(ctx context.Context, jobID string, status strin
 	return nil
 }
 
+func (r *Repository) RetryJob(ctx context.Context, jobID string, errMsg string) error {
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET status = $1,
+			claimed_by = NULL,
+			lease_expires_at = NULL,
+			completed_at = NULL,
+			error = $2
+		WHERE id = $3
+	`, JobStatusPending, errMsg, jobID); err != nil {
+		return fmt.Errorf("retry job %s: %w", jobID, err)
+	}
+
+	return nil
+}
+
 func (r *Repository) UpdateDeploymentStatus(ctx context.Context, deploymentID string) error {
 	var totalJobs int
 	var successJobs int
@@ -174,12 +191,12 @@ func (r *Repository) UpdateDeploymentStatus(ctx context.Context, deploymentID st
 		SELECT
 			COUNT(*),
 			COUNT(*) FILTER (WHERE status = $1),
-			COUNT(*) FILTER (WHERE status = $2),
-			COUNT(*) FILTER (WHERE status = $3),
-			COUNT(*) FILTER (WHERE status = $4)
+			COUNT(*) FILTER (WHERE status IN ($2, $3)),
+			COUNT(*) FILTER (WHERE status = $4),
+			COUNT(*) FILTER (WHERE status = $5)
 		FROM jobs
-		WHERE deployment_id = $5
-	`, JobStatusSuccess, JobStatusFailed, JobStatusRunning, JobStatusPending, deploymentID).Scan(
+		WHERE deployment_id = $6
+	`, JobStatusSuccess, JobStatusFailed, JobStatusTimeout, JobStatusRunning, JobStatusPending, deploymentID).Scan(
 		&totalJobs,
 		&successJobs,
 		&failedJobs,
@@ -189,24 +206,7 @@ func (r *Repository) UpdateDeploymentStatus(ctx context.Context, deploymentID st
 		return fmt.Errorf("count jobs for deployment %s: %w", deploymentID, err)
 	}
 
-	status := DeploymentStatusPending
-	completed := false
-	switch {
-	case totalJobs > 0 && successJobs == totalJobs:
-		status = DeploymentStatusSuccess
-		completed = true
-	case failedJobs > 0 && pendingJobs == 0 && runningJobs == 0:
-		if successJobs > 0 {
-			status = DeploymentStatusPartial
-		} else {
-			status = DeploymentStatusFailed
-		}
-		completed = true
-	case runningJobs > 0:
-		status = DeploymentStatusRunning
-	case pendingJobs > 0 && (successJobs > 0 || failedJobs > 0):
-		status = DeploymentStatusRunning
-	}
+	status, completed := deploymentStatusFromCounts(totalJobs, successJobs, failedJobs, runningJobs, pendingJobs)
 
 	if completed {
 		if _, err := r.db.ExecContext(ctx, `
@@ -230,6 +230,22 @@ func (r *Repository) UpdateDeploymentStatus(ctx context.Context, deploymentID st
 	}
 
 	return nil
+}
+
+func deploymentStatusFromCounts(totalJobs, successJobs, failedJobs, runningJobs, pendingJobs int) (string, bool) {
+	switch {
+	case pendingJobs > 0 || runningJobs > 0:
+		return DeploymentStatusRunning, false
+	case totalJobs > 0 && successJobs == totalJobs:
+		return DeploymentStatusSuccess, true
+	case totalJobs > 0 && failedJobs > 0:
+		if failedJobs == totalJobs {
+			return DeploymentStatusFailed, true
+		}
+		return DeploymentStatusPartial, true
+	default:
+		return DeploymentStatusPending, false
+	}
 }
 
 func (r *Repository) GetDeployments(ctx context.Context) ([]Deployment, error) {
