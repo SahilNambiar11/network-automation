@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -65,6 +66,13 @@ type Agent struct {
 	LastHeartbeat time.Time `json:"last_heartbeat"`
 	ActiveJobs    int       `json:"active_jobs"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+type DeviceState struct {
+	DeviceName   string          `json:"device_name"`
+	DeviceType   string          `json:"device_type"`
+	ActualConfig json.RawMessage `json:"actual_config"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 func NewRepository(db *sql.DB) *Repository {
@@ -134,6 +142,69 @@ func (r *Repository) ListAgents(ctx context.Context) ([]Agent, error) {
 	}
 
 	return agents, nil
+}
+
+func (r *Repository) UpsertDeviceState(ctx context.Context, deviceName string, deviceType string, actualConfig []byte) error {
+	if !json.Valid(actualConfig) {
+		return fmt.Errorf("actual config for device %s is not valid JSON", deviceName)
+	}
+
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT INTO device_states (device_name, device_type, actual_config, updated_at)
+		VALUES ($1, $2, $3::jsonb, now())
+		ON CONFLICT (device_name) DO UPDATE
+		SET device_type = EXCLUDED.device_type,
+			actual_config = EXCLUDED.actual_config,
+			updated_at = now()
+	`, deviceName, deviceType, string(actualConfig)); err != nil {
+		return fmt.Errorf("upsert device state %s: %w", deviceName, err)
+	}
+
+	return nil
+}
+
+func (r *Repository) GetDeviceState(ctx context.Context, deviceName string) (*DeviceState, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT device_name, device_type, actual_config, updated_at
+		FROM device_states
+		WHERE device_name = $1
+	`, deviceName)
+
+	state, err := scanDeviceState(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &state, nil
+}
+
+func (r *Repository) ListDeviceStates(ctx context.Context) ([]DeviceState, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT device_name, device_type, actual_config, updated_at
+		FROM device_states
+		ORDER BY device_name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list device states: %w", err)
+	}
+	defer rows.Close()
+
+	var states []DeviceState
+	for rows.Next() {
+		state, err := scanDeviceState(rows)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate device states: %w", err)
+	}
+
+	return states, nil
 }
 
 func AgentsWithComputedHealth(agents []Agent, now time.Time) []Agent {
@@ -462,6 +533,25 @@ func scanDeployment(scanner deploymentScanner) (Deployment, error) {
 
 	deployment.CompletedAt = nullableTime(completedAt)
 	return deployment, nil
+}
+
+type deviceStateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDeviceState(scanner deviceStateScanner) (DeviceState, error) {
+	var state DeviceState
+
+	if err := scanner.Scan(
+		&state.DeviceName,
+		&state.DeviceType,
+		&state.ActualConfig,
+		&state.UpdatedAt,
+	); err != nil {
+		return DeviceState{}, fmt.Errorf("scan device state: %w", err)
+	}
+
+	return state, nil
 }
 
 func scanJobs(rows *sql.Rows) ([]Job, error) {

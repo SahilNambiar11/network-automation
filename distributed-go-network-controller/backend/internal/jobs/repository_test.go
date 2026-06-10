@@ -401,6 +401,84 @@ func TestRepositoryListAgents(t *testing.T) {
 	}
 }
 
+func TestRepositoryGetDeviceState(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	now := time.Now()
+	actualConfig := []byte(`{"vlans":[{"id":10}],"firewall_rules":[]}`)
+
+	mock.ExpectQuery("SELECT device_name, device_type, actual_config, updated_at").
+		WithArgs("core-router").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"device_name",
+			"device_type",
+			"actual_config",
+			"updated_at",
+		}).AddRow("core-router", "router", actualConfig, now))
+
+	state, err := repository.GetDeviceState(context.Background(), "core-router")
+	if err != nil {
+		t.Fatalf("get device state: %v", err)
+	}
+	if state == nil {
+		t.Fatalf("expected device state")
+	}
+	if state.DeviceName != "core-router" {
+		t.Fatalf("expected core-router, got %q", state.DeviceName)
+	}
+	if string(state.ActualConfig) != string(actualConfig) {
+		t.Fatalf("expected actual config %s, got %s", actualConfig, state.ActualConfig)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryListDeviceStates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT device_name, device_type, actual_config, updated_at").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"device_name",
+			"device_type",
+			"actual_config",
+			"updated_at",
+		}).
+			AddRow("access-switch", "switch", []byte(`{"vlans":[]}`), now).
+			AddRow("core-router", "router", []byte(`{"vlans":[{"id":10}]}`), now))
+
+	states, err := repository.ListDeviceStates(context.Background())
+	if err != nil {
+		t.Fatalf("list device states: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 device states, got %d", len(states))
+	}
+	if states[0].DeviceName != "access-switch" {
+		t.Fatalf("expected access-switch first, got %q", states[0].DeviceName)
+	}
+	if states[1].DeviceName != "core-router" {
+		t.Fatalf("expected core-router second, got %q", states[1].DeviceName)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestAgentStatusAtMarksStaleHeartbeatUnhealthy(t *testing.T) {
 	now := time.Now()
 	status := AgentStatusAt(now.Add(-AgentHeartbeatTimeout-time.Second), now)

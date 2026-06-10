@@ -130,6 +130,7 @@ type fakeDeploymentRepository struct {
 	createDeploymentCalled bool
 	jobsCreated            int
 	agents                 []jobs.Agent
+	deviceStates           map[string]jobs.DeviceState
 }
 
 func (r *fakeDeploymentRepository) CreateDeployment(ctx context.Context, rawConfig string) (string, error) {
@@ -164,4 +165,45 @@ func (r *fakeDeploymentRepository) GetJobsByDeployment(ctx context.Context, depl
 
 func (r *fakeDeploymentRepository) ListAgents(ctx context.Context) ([]jobs.Agent, error) {
 	return r.agents, nil
+}
+
+func (r *fakeDeploymentRepository) GetDeviceState(ctx context.Context, deviceName string) (*jobs.DeviceState, error) {
+	if r.deviceStates == nil {
+		return nil, nil
+	}
+
+	state, ok := r.deviceStates[deviceName]
+	if !ok {
+		return nil, nil
+	}
+
+	return &state, nil
+}
+
+func (r *fakeDeploymentRepository) ListDeviceStates(ctx context.Context) ([]jobs.DeviceState, error) {
+	if r.deviceStates == nil {
+		return nil, nil
+	}
+
+	states := make([]jobs.DeviceState, 0, len(r.deviceStates))
+	for _, state := range r.deviceStates {
+		states = append(states, state)
+	}
+
+	return states, nil
+}
+
+func (r *fakeDeploymentRepository) UpsertDeviceState(ctx context.Context, deviceName string, deviceType string, actualConfig []byte) error {
+	if r.deviceStates == nil {
+		r.deviceStates = make(map[string]jobs.DeviceState)
+	}
+
+	existing := r.deviceStates[deviceName]
+	r.deviceStates[deviceName] = jobs.DeviceState{
+		DeviceName:   deviceName,
+		DeviceType:   deviceType,
+		ActualConfig: append([]byte(nil), actualConfig...),
+		UpdatedAt:    existing.UpdatedAt,
+	}
+	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/example/distributed-go-network-controller/backend/internal/config"
 	"github.com/example/distributed-go-network-controller/backend/internal/db"
+	"github.com/example/distributed-go-network-controller/backend/internal/devices"
 	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
 )
 
@@ -30,6 +32,8 @@ type jobProcessorRepository interface {
 	RetryJob(ctx context.Context, jobID string, errMsg string) error
 	CompleteJob(ctx context.Context, jobID string, status string, errMsg string) error
 	UpdateDeploymentStatus(ctx context.Context, deploymentID string) error
+	GetDeployment(ctx context.Context, id string) (*jobs.Deployment, error)
+	UpsertDeviceState(ctx context.Context, deviceName string, deviceType string, actualConfig []byte) error
 }
 
 func main() {
@@ -232,6 +236,11 @@ func ProcessJobOnce(ctx context.Context, repository jobProcessorRepository, job 
 		if err := repository.CompleteJob(ctx, job.ID, status, errMsg); err != nil {
 			return fmt.Errorf("update job %s status to %s: %w", job.ID, status, err)
 		}
+		if status == jobs.JobStatusSuccess {
+			if err := updateDeviceStateAfterSuccess(ctx, repository, job); err != nil {
+				return err
+			}
+		}
 		if status == jobs.JobStatusFailed {
 			log.Printf("job %s permanently failed after attempt %d/%d", job.ID, job.Attempts, job.MaxAttempts)
 		} else if status == jobs.JobStatusTimeout {
@@ -245,6 +254,61 @@ func ProcessJobOnce(ctx context.Context, repository jobProcessorRepository, job 
 	}
 	log.Printf("updated deployment %s status after job %s", job.DeploymentID, job.ID)
 
+	return nil
+}
+
+type actualDeviceConfig struct {
+	VLANs            []devices.VLAN         `json:"vlans"`
+	FirewallRules    []devices.FirewallRule `json:"firewall_rules"`
+	LastDeploymentID string                 `json:"last_deployment_id"`
+	LastJobID        string                 `json:"last_job_id"`
+}
+
+func updateDeviceStateAfterSuccess(ctx context.Context, repository jobProcessorRepository, job jobs.Job) error {
+	log.Printf("device state update started for device %s after job %s", job.DeviceName, job.ID)
+
+	deployment, err := repository.GetDeployment(ctx, job.DeploymentID)
+	if err != nil {
+		log.Printf("device state update failed for device %s after job %s: %v", job.DeviceName, job.ID, err)
+		return fmt.Errorf("load deployment %s for device state update: %w", job.DeploymentID, err)
+	}
+	if deployment == nil {
+		err := fmt.Errorf("deployment %s not found", job.DeploymentID)
+		log.Printf("device state update failed for device %s after job %s: %v", job.DeviceName, job.ID, err)
+		return err
+	}
+
+	config, err := devices.ParseYAML([]byte(deployment.RawConfig))
+	if err != nil {
+		log.Printf("device state update failed for device %s after job %s: %v", job.DeviceName, job.ID, err)
+		return fmt.Errorf("parse deployment %s raw config for device state update: %w", job.DeploymentID, err)
+	}
+
+	deviceType := job.DeviceType
+	for _, device := range config.Devices {
+		if device.Name == job.DeviceName {
+			deviceType = device.Type
+			break
+		}
+	}
+
+	actualConfig, err := json.Marshal(actualDeviceConfig{
+		VLANs:            config.VLANs,
+		FirewallRules:    config.FirewallRules,
+		LastDeploymentID: job.DeploymentID,
+		LastJobID:        job.ID,
+	})
+	if err != nil {
+		log.Printf("device state update failed for device %s after job %s: %v", job.DeviceName, job.ID, err)
+		return fmt.Errorf("build actual config for device %s: %w", job.DeviceName, err)
+	}
+
+	if err := repository.UpsertDeviceState(ctx, job.DeviceName, deviceType, actualConfig); err != nil {
+		log.Printf("device state update failed for device %s after job %s: %v", job.DeviceName, job.ID, err)
+		return err
+	}
+
+	log.Printf("device state updated for device %s after job %s", job.DeviceName, job.ID)
 	return nil
 }
 

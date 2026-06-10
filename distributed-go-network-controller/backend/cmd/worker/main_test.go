@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -31,6 +32,9 @@ func TestProcessJobOnceSuccessfulDeployment(t *testing.T) {
 	if job.Error != nil {
 		t.Fatalf("expected empty error, got %q", *job.Error)
 	}
+	if _, ok := repository.deviceStates["core-router"]; !ok {
+		t.Fatalf("expected successful deployment to create device state")
+	}
 }
 
 func TestProcessJobOncePermanentFailure(t *testing.T) {
@@ -55,6 +59,9 @@ func TestProcessJobOncePermanentFailure(t *testing.T) {
 	if job.CompletedAt == nil {
 		t.Fatalf("expected completed_at to be populated")
 	}
+	if len(repository.deviceStates) != 0 {
+		t.Fatalf("expected failed deployment not to create device state")
+	}
 }
 
 func TestProcessJobOncePermanentTimeout(t *testing.T) {
@@ -78,6 +85,42 @@ func TestProcessJobOncePermanentTimeout(t *testing.T) {
 	}
 	if job.CompletedAt == nil {
 		t.Fatalf("expected completed_at to be populated")
+	}
+	if len(repository.deviceStates) != 0 {
+		t.Fatalf("expected timed out deployment not to create device state")
+	}
+}
+
+func TestSuccessfulDeploymentCreatesDeviceState(t *testing.T) {
+	repository := newFakeJobProcessorRepository(fakeJob("job-1", "core-router", "router", 3))
+
+	if err := processNextJobForTest(context.Background(), repository, 100*time.Millisecond); err != nil {
+		t.Fatalf("process job: %v", err)
+	}
+
+	state, ok := repository.deviceStates["core-router"]
+	if !ok {
+		t.Fatalf("expected device state for core-router")
+	}
+	if state.DeviceType != "router" {
+		t.Fatalf("expected router device type, got %q", state.DeviceType)
+	}
+
+	var actualConfig actualDeviceConfig
+	if err := json.Unmarshal(state.ActualConfig, &actualConfig); err != nil {
+		t.Fatalf("decode actual config: %v", err)
+	}
+	if len(actualConfig.VLANs) != 1 || actualConfig.VLANs[0].ID != 10 {
+		t.Fatalf("expected VLAN 10 in actual config, got %#v", actualConfig.VLANs)
+	}
+	if len(actualConfig.FirewallRules) != 1 {
+		t.Fatalf("expected firewall rules in actual config")
+	}
+	if actualConfig.LastDeploymentID != "deployment-1" {
+		t.Fatalf("expected last deployment id deployment-1, got %q", actualConfig.LastDeploymentID)
+	}
+	if actualConfig.LastJobID != "job-1" {
+		t.Fatalf("expected last job id job-1, got %q", actualConfig.LastJobID)
 	}
 }
 
@@ -236,13 +279,38 @@ func fakeJob(id string, deviceName string, deviceType string, maxAttempts int) j
 type fakeJobProcessorRepository struct {
 	mu                  sync.Mutex
 	jobs                map[string]jobs.Job
+	deployments         map[string]jobs.Deployment
+	deviceStates        map[string]jobs.DeviceState
 	completed           int
 	completionTarget    int
 	cancelWhenCompleted context.CancelFunc
 }
 
 func newFakeJobProcessorRepository(jobsList ...jobs.Job) *fakeJobProcessorRepository {
-	repository := &fakeJobProcessorRepository{jobs: make(map[string]jobs.Job)}
+	repository := &fakeJobProcessorRepository{
+		jobs:         make(map[string]jobs.Job),
+		deployments:  make(map[string]jobs.Deployment),
+		deviceStates: make(map[string]jobs.DeviceState),
+	}
+	repository.deployments["deployment-1"] = jobs.Deployment{
+		ID: "deployment-1",
+		RawConfig: `
+devices:
+  - name: core-router
+    type: router
+  - name: access-switch
+    type: switch
+vlans:
+  - id: 10
+    name: engineering
+    subnet: 10.10.0.0/24
+firewall_rules:
+  - source: guest
+    destination: engineering
+    port: 22
+    action: deny
+`,
+	}
 	for _, job := range jobsList {
 		repository.jobs[job.ID] = job
 	}
@@ -319,6 +387,31 @@ func (r *fakeJobProcessorRepository) CompleteJob(ctx context.Context, jobID stri
 }
 
 func (r *fakeJobProcessorRepository) UpdateDeploymentStatus(ctx context.Context, deploymentID string) error {
+	return nil
+}
+
+func (r *fakeJobProcessorRepository) GetDeployment(ctx context.Context, id string) (*jobs.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	deployment, ok := r.deployments[id]
+	if !ok {
+		return nil, nil
+	}
+
+	return &deployment, nil
+}
+
+func (r *fakeJobProcessorRepository) UpsertDeviceState(ctx context.Context, deviceName string, deviceType string, actualConfig []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.deviceStates[deviceName] = jobs.DeviceState{
+		DeviceName:   deviceName,
+		DeviceType:   deviceType,
+		ActualConfig: append([]byte(nil), actualConfig...),
+		UpdatedAt:    time.Now(),
+	}
 	return nil
 }
 

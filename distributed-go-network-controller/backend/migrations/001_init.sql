@@ -38,12 +38,5 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS device_states (
-    device_name text PRIMARY KEY,
-    device_type text NOT NULL,
-    actual_config jsonb NOT NULL DEFAULT '{}'::jsonb,
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE INDEX IF NOT EXISTS jobs_deployment_id_idx ON jobs (deployment_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs (status);
