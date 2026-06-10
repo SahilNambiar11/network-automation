@@ -61,6 +61,14 @@ Expected response:
 {"status":"ok","service":"controller"}
 ```
 
+## Validate Network YAML
+
+```sh
+curl -X POST --data-binary @examples/valid-network.yaml http://localhost:8080/validate
+```
+
+Invalid configs return `200 OK` with structured validation errors. Malformed YAML returns `400 Bad Request`.
+
 ## Scale Workers
 
 ```sh

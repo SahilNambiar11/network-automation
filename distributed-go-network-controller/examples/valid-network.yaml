@@ -1,0 +1,21 @@
+devices:
+  - name: core-router
+    type: router
+
+  - name: access-switch
+    type: switch
+
+vlans:
+  - id: 10
+    name: engineering
+    subnet: 10.10.0.0/24
+
+  - id: 20
+    name: guest
+    subnet: 10.20.0.0/24
+
+firewall_rules:
+  - source: guest
+    destination: engineering
+    port: 22
+    action: deny
