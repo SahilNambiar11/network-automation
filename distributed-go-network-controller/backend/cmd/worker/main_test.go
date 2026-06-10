@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +126,74 @@ func TestExecuteMockDeploymentTimeout(t *testing.T) {
 	}
 }
 
+func TestRunWorkerPoolProcessesMultipleJobs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repository := newFakeJobProcessorRepository(
+		fakeJob("job-1", "core-router", "router", 3),
+		fakeJob("job-2", "access-switch", "switch", 3),
+		fakeJob("job-3", "edge-router", "router", 3),
+		fakeJob("job-4", "branch-switch", "switch", 3),
+	)
+	repository.cancelWhenCompleted = cancel
+	repository.completionTarget = 4
+
+	RunWorkerPool(ctx, repository, "worker-1", 2)
+
+	for _, jobID := range []string{"job-1", "job-2", "job-3", "job-4"} {
+		job := repository.job(jobID)
+		if job.Status != jobs.JobStatusSuccess {
+			t.Fatalf("expected %s status success, got %q", jobID, job.Status)
+		}
+		if job.Attempts != 1 {
+			t.Fatalf("expected %s attempts 1, got %d", jobID, job.Attempts)
+		}
+	}
+}
+
+func TestClaimLoopRespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repository := newFakeJobProcessorRepository()
+	jobsCh := make(chan jobs.Job, 1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		claimLoop(ctx, repository, "worker-1", jobsCh, time.Hour, jobLeaseDuration)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("expected claim loop to stop after context cancellation")
+	}
+}
+
+func TestExecutorStopsWhenJobsChannelCloses(t *testing.T) {
+	ctx := context.Background()
+	repository := newFakeJobProcessorRepository()
+	jobsCh := make(chan jobs.Job)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go executorLoop(ctx, 1, repository, jobsCh, &wg)
+	close(jobsCh)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("expected executor to stop when jobs channel closes")
+	}
+}
+
 func processNextJobForTest(ctx context.Context, repository *fakeJobProcessorRepository, timeout time.Duration) error {
 	job, err := repository.ClaimNextPendingJob(ctx, "worker-1")
 	if err != nil {
@@ -150,7 +219,11 @@ func fakeJob(id string, deviceName string, deviceType string, maxAttempts int) j
 }
 
 type fakeJobProcessorRepository struct {
-	jobs map[string]jobs.Job
+	mu                  sync.Mutex
+	jobs                map[string]jobs.Job
+	completed           int
+	completionTarget    int
+	cancelWhenCompleted context.CancelFunc
 }
 
 func newFakeJobProcessorRepository(jobsList ...jobs.Job) *fakeJobProcessorRepository {
@@ -162,6 +235,13 @@ func newFakeJobProcessorRepository(jobsList ...jobs.Job) *fakeJobProcessorReposi
 }
 
 func (r *fakeJobProcessorRepository) ClaimNextPendingJob(ctx context.Context, workerID string) (*jobs.Job, error) {
+	return r.ClaimNextPendingJobWithLease(ctx, workerID, jobLeaseDuration)
+}
+
+func (r *fakeJobProcessorRepository) ClaimNextPendingJobWithLease(ctx context.Context, workerID string, leaseDuration time.Duration) (*jobs.Job, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for _, job := range r.jobs {
 		if job.Status != jobs.JobStatusPending {
 			continue
@@ -181,6 +261,9 @@ func (r *fakeJobProcessorRepository) ClaimNextPendingJob(ctx context.Context, wo
 }
 
 func (r *fakeJobProcessorRepository) RetryJob(ctx context.Context, jobID string, errMsg string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	job := r.jobs[jobID]
 	job.Status = jobs.JobStatusPending
 	job.ClaimedBy = nil
@@ -192,6 +275,9 @@ func (r *fakeJobProcessorRepository) RetryJob(ctx context.Context, jobID string,
 }
 
 func (r *fakeJobProcessorRepository) CompleteJob(ctx context.Context, jobID string, status string, errMsg string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	job := r.jobs[jobID]
 	now := time.Now()
 	job.Status = status
@@ -202,9 +288,20 @@ func (r *fakeJobProcessorRepository) CompleteJob(ctx context.Context, jobID stri
 		job.Error = &errMsg
 	}
 	r.jobs[jobID] = job
+	r.completed++
+	if r.cancelWhenCompleted != nil && r.completionTarget > 0 && r.completed >= r.completionTarget {
+		r.cancelWhenCompleted()
+	}
 	return nil
 }
 
 func (r *fakeJobProcessorRepository) UpdateDeploymentStatus(ctx context.Context, deploymentID string) error {
 	return nil
+}
+
+func (r *fakeJobProcessorRepository) job(jobID string) jobs.Job {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.jobs[jobID]
 }

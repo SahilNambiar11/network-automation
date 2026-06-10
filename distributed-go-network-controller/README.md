@@ -33,7 +33,7 @@ Phase 1 scaffold for a distributed Go infrastructure automation platform.
 ## Services
 
 - `backend/cmd/controller`: Go HTTP API service on port `8080`.
-- `backend/cmd/worker`: Go worker process that logs its worker ID and heartbeat.
+- `backend/cmd/worker`: Go worker process with a local goroutine pool for concurrent job execution.
 - `postgres`: PostgreSQL database for future controller state.
 - `frontend`: React + Vite app on port `5173`.
 
@@ -110,6 +110,7 @@ The backend reads these environment variables:
 - `DATABASE_URL`
 - `SERVICE_PORT`
 - `WORKER_ID`
+- `WORKER_CONCURRENCY` defaults to `3`
 
 ## Next Phases
 

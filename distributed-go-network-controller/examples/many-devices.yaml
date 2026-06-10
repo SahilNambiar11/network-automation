@@ -1,0 +1,36 @@
+devices:
+  - name: router-1
+    type: router
+  - name: router-2
+    type: router
+  - name: router-3
+    type: router
+  - name: switch-1
+    type: switch
+  - name: switch-2
+    type: switch
+  - name: switch-3
+    type: switch
+  - name: firewall-1
+    type: firewall
+  - name: firewall-2
+    type: firewall
+  - name: firewall-3
+    type: firewall
+  - name: firewall-4
+    type: firewall
+
+vlans:
+  - id: 10
+    name: engineering
+    subnet: 10.10.0.0/24
+
+  - id: 20
+    name: guest
+    subnet: 10.20.0.0/24
+
+firewall_rules:
+  - source: guest
+    destination: engineering
+    port: 22
+    action: deny

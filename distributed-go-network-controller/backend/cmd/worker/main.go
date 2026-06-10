@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/config"
@@ -18,6 +21,7 @@ const jobLeaseDuration = jobs.DefaultJobLeaseDuration
 
 type jobProcessorRepository interface {
 	ClaimNextPendingJob(ctx context.Context, workerID string) (*jobs.Job, error)
+	ClaimNextPendingJobWithLease(ctx context.Context, workerID string, leaseDuration time.Duration) (*jobs.Job, error)
 	RetryJob(ctx context.Context, jobID string, errMsg string) error
 	CompleteJob(ctx context.Context, jobID string, status string, errMsg string) error
 	UpdateDeploymentStatus(ctx context.Context, deploymentID string) error
@@ -28,7 +32,9 @@ func main() {
 
 	log.Printf("worker starting with id %q", cfg.WorkerID)
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	database, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -37,13 +43,40 @@ func main() {
 	log.Printf("worker %q connected to postgres", cfg.WorkerID)
 
 	repository := jobs.NewRepository(database)
-	pollInterval := 2 * time.Second
+	log.Printf("worker pool starting with concurrency %d", cfg.WorkerConcurrency)
+	RunWorkerPool(ctx, repository, cfg.WorkerID, cfg.WorkerConcurrency)
+	log.Println("graceful shutdown completed")
+}
+
+func RunWorkerPool(ctx context.Context, repository jobProcessorRepository, workerID string, concurrency int) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	jobsCh := make(chan jobs.Job, concurrency*2)
+	var executors sync.WaitGroup
+	for executorID := 1; executorID <= concurrency; executorID++ {
+		executors.Add(1)
+		go executorLoop(ctx, executorID, repository, jobsCh, &executors)
+	}
+
+	claimLoop(ctx, repository, workerID, jobsCh, 2*time.Second, jobLeaseDuration)
+	log.Println("graceful shutdown started")
+	close(jobsCh)
+	executors.Wait()
+}
+
+func claimLoop(ctx context.Context, repository jobProcessorRepository, workerID string, jobsCh chan<- jobs.Job, pollInterval time.Duration, leaseDuration time.Duration) {
 	idlePolls := 0
 	for {
-		job, err := repository.ClaimNextPendingJobWithLease(ctx, cfg.WorkerID, jobLeaseDuration)
+		if ctx.Err() != nil {
+			return
+		}
+
+		job, err := repository.ClaimNextPendingJobWithLease(ctx, workerID, leaseDuration)
 		if err != nil {
 			log.Printf("failed to claim pending job: %v", err)
-			time.Sleep(pollInterval)
+			sleepOrDone(ctx, pollInterval)
 			continue
 		}
 		if job == nil {
@@ -51,14 +84,42 @@ func main() {
 			if idlePolls == 1 || idlePolls%30 == 0 {
 				log.Println("no pending jobs available")
 			}
-			time.Sleep(pollInterval)
+			sleepOrDone(ctx, pollInterval)
 			continue
 		}
 		idlePolls = 0
-		if err := ProcessJobOnce(ctx, repository, *job, jobExecutionTimeout); err != nil {
-			log.Printf("failed to process job %s: %v", job.ID, err)
+
+		log.Printf("claim loop claimed job %s", job.ID)
+		select {
+		case jobsCh <- *job:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func executorLoop(ctx context.Context, executorID int, repository jobProcessorRepository, jobsCh <-chan jobs.Job, wg *sync.WaitGroup) {
+	defer wg.Done()
+	log.Printf("executor %d starting", executorID)
+
+	for job := range jobsCh {
+		log.Printf("executor %d processing job %s", executorID, job.ID)
+		if err := ProcessJobOnce(ctx, repository, job, jobExecutionTimeout); err != nil {
+			log.Printf("executor %d failed to process job %s: %v", executorID, job.ID, err)
 			continue
 		}
+		log.Printf("executor %d completed job %s", executorID, job.ID)
+	}
+	log.Printf("executor %d stopping", executorID)
+}
+
+func sleepOrDone(ctx context.Context, duration time.Duration) {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
 	}
 }
 
