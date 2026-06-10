@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: network_controller
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d network_controller"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  controller:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.controller
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/network_controller?sslmode=disable
+      SERVICE_PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/network_controller?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - controller
+
+volumes:
+  postgres_data:
