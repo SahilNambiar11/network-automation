@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/devices"
 	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
@@ -90,10 +91,45 @@ firewall_rules:
 	}
 }
 
+func TestListAgentsMarksStaleHeartbeatUnhealthy(t *testing.T) {
+	repository := &fakeDeploymentRepository{
+		agents: []jobs.Agent{
+			{
+				ID:            "worker-1",
+				Hostname:      "host-a",
+				Status:        jobs.AgentStatusHealthy,
+				LastHeartbeat: time.Now().Add(-jobs.AgentHeartbeatTimeout - time.Second),
+				ActiveJobs:    1,
+				CreatedAt:     time.Now(),
+			},
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	response := httptest.NewRecorder()
+
+	listAgentsHandler(repository).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+
+	var payload []jobs.Agent
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(payload))
+	}
+	if payload[0].Status != jobs.AgentStatusUnhealthy {
+		t.Fatalf("expected unhealthy status, got %q", payload[0].Status)
+	}
+}
+
 type fakeDeploymentRepository struct {
 	deploymentID           string
 	createDeploymentCalled bool
 	jobsCreated            int
+	agents                 []jobs.Agent
 }
 
 func (r *fakeDeploymentRepository) CreateDeployment(ctx context.Context, rawConfig string) (string, error) {
@@ -124,4 +160,8 @@ func (r *fakeDeploymentRepository) GetJobs(ctx context.Context) ([]jobs.Job, err
 
 func (r *fakeDeploymentRepository) GetJobsByDeployment(ctx context.Context, deploymentID string) ([]jobs.Job, error) {
 	return nil, nil
+}
+
+func (r *fakeDeploymentRepository) ListAgents(ctx context.Context) ([]jobs.Agent, error) {
+	return r.agents, nil
 }

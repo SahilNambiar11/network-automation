@@ -12,7 +12,10 @@ import (
 
 const (
 	DefaultJobLeaseDuration = 30 * time.Second
+	AgentHeartbeatTimeout   = 15 * time.Second
 
+	AgentStatusHealthy      = "healthy"
+	AgentStatusUnhealthy    = "unhealthy"
 	DeploymentStatusPending = "pending"
 	DeploymentStatusRunning = "running"
 	DeploymentStatusSuccess = "success"
@@ -55,8 +58,100 @@ type Job struct {
 	PreviousWorker *string    `json:"-"`
 }
 
+type Agent struct {
+	ID            string    `json:"id"`
+	Hostname      string    `json:"hostname"`
+	Status        string    `json:"status"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	ActiveJobs    int       `json:"active_jobs"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
+}
+
+func (r *Repository) WorkerTablesReady(ctx context.Context) error {
+	var jobsReady bool
+	var agentsReady bool
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT to_regclass('public.jobs') IS NOT NULL,
+			to_regclass('public.agents') IS NOT NULL
+	`).Scan(&jobsReady, &agentsReady); err != nil {
+		return fmt.Errorf("check worker tables: %w", err)
+	}
+	if !jobsReady || !agentsReady {
+		return fmt.Errorf("required worker tables are not ready")
+	}
+
+	return nil
+}
+
+func (r *Repository) UpsertAgentHeartbeat(ctx context.Context, agentID, hostname string, activeJobs int) error {
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT INTO agents (id, hostname, status, last_heartbeat, active_jobs)
+		VALUES ($1, $2, $3, now(), $4)
+		ON CONFLICT (id) DO UPDATE
+		SET hostname = EXCLUDED.hostname,
+			status = EXCLUDED.status,
+			last_heartbeat = now(),
+			active_jobs = EXCLUDED.active_jobs
+	`, agentID, hostname, AgentStatusHealthy, activeJobs); err != nil {
+		return fmt.Errorf("upsert agent heartbeat %s: %w", agentID, err)
+	}
+
+	return nil
+}
+
+func (r *Repository) ListAgents(ctx context.Context) ([]Agent, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, hostname, status, last_heartbeat, active_jobs, created_at
+		FROM agents
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []Agent
+	for rows.Next() {
+		var agent Agent
+		if err := rows.Scan(
+			&agent.ID,
+			&agent.Hostname,
+			&agent.Status,
+			&agent.LastHeartbeat,
+			&agent.ActiveJobs,
+			&agent.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agents: %w", err)
+	}
+
+	return agents, nil
+}
+
+func AgentsWithComputedHealth(agents []Agent, now time.Time) []Agent {
+	computed := make([]Agent, len(agents))
+	for index, agent := range agents {
+		computed[index] = agent
+		computed[index].Status = AgentStatusAt(agent.LastHeartbeat, now)
+	}
+
+	return computed
+}
+
+func AgentStatusAt(lastHeartbeat time.Time, now time.Time) string {
+	if now.Sub(lastHeartbeat) > AgentHeartbeatTimeout {
+		return AgentStatusUnhealthy
+	}
+
+	return AgentStatusHealthy
 }
 
 func (r *Repository) CreateDeployment(ctx context.Context, rawConfig string) (string, error) {

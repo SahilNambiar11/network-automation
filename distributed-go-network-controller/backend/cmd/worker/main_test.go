@@ -138,7 +138,7 @@ func TestRunWorkerPoolProcessesMultipleJobs(t *testing.T) {
 	repository.cancelWhenCompleted = cancel
 	repository.completionTarget = 4
 
-	RunWorkerPool(ctx, repository, "worker-1", 2)
+	RunWorkerPool(ctx, repository, "worker-1", 2, &activeJobCounter{})
 
 	for _, jobID := range []string{"job-1", "job-2", "job-3", "job-4"} {
 		job := repository.job(jobID)
@@ -178,7 +178,7 @@ func TestExecutorStopsWhenJobsChannelCloses(t *testing.T) {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	go executorLoop(ctx, 1, repository, jobsCh, &wg)
+	go executorLoop(ctx, 1, repository, jobsCh, &activeJobCounter{}, &wg)
 	close(jobsCh)
 
 	done := make(chan struct{})
@@ -191,6 +191,21 @@ func TestExecutorStopsWhenJobsChannelCloses(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("expected executor to stop when jobs channel closes")
+	}
+}
+
+func TestActiveJobCounterUpdates(t *testing.T) {
+	counter := &activeJobCounter{}
+
+	counter.Increment()
+	counter.Increment()
+	if counter.Load() != 2 {
+		t.Fatalf("expected active jobs 2, got %d", counter.Load())
+	}
+
+	counter.Decrement()
+	if counter.Load() != 1 {
+		t.Fatalf("expected active jobs 1, got %d", counter.Load())
 	}
 }
 
@@ -236,6 +251,14 @@ func newFakeJobProcessorRepository(jobsList ...jobs.Job) *fakeJobProcessorReposi
 
 func (r *fakeJobProcessorRepository) ClaimNextPendingJob(ctx context.Context, workerID string) (*jobs.Job, error) {
 	return r.ClaimNextPendingJobWithLease(ctx, workerID, jobLeaseDuration)
+}
+
+func (r *fakeJobProcessorRepository) WorkerTablesReady(ctx context.Context) error {
+	return nil
+}
+
+func (r *fakeJobProcessorRepository) UpsertAgentHeartbeat(ctx context.Context, agentID, hostname string, activeJobs int) error {
+	return nil
 }
 
 func (r *fakeJobProcessorRepository) ClaimNextPendingJobWithLease(ctx context.Context, workerID string, leaseDuration time.Duration) (*jobs.Job, error) {

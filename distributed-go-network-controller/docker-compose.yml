@@ -34,6 +34,7 @@ services:
       dockerfile: Dockerfile.worker
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/network_controller?sslmode=disable
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-3}"
     depends_on:
       postgres:
         condition: service_healthy

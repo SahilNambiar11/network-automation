@@ -318,6 +318,109 @@ func TestRepositoryRetryJob(t *testing.T) {
 	}
 }
 
+func TestRepositoryUpsertAgentHeartbeatInsertsNewAgent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectExec("INSERT INTO agents").
+		WithArgs("worker-1", "host-a", AgentStatusHealthy, 2).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.UpsertAgentHeartbeat(context.Background(), "worker-1", "host-a", 2); err != nil {
+		t.Fatalf("upsert agent heartbeat: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryUpsertAgentHeartbeatUpdatesExistingAgent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+
+	mock.ExpectExec("INSERT INTO agents").
+		WithArgs("worker-1", "host-b", AgentStatusHealthy, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repository.UpsertAgentHeartbeat(context.Background(), "worker-1", "host-b", 1); err != nil {
+		t.Fatalf("upsert existing agent heartbeat: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryListAgents(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT id, hostname, status, last_heartbeat, active_jobs, created_at").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"hostname",
+			"status",
+			"last_heartbeat",
+			"active_jobs",
+			"created_at",
+		}).AddRow("worker-1", "host-a", AgentStatusHealthy, now, 2, now))
+
+	agents, err := repository.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].ID != "worker-1" {
+		t.Fatalf("expected worker-1, got %q", agents[0].ID)
+	}
+	if agents[0].ActiveJobs != 2 {
+		t.Fatalf("expected active jobs 2, got %d", agents[0].ActiveJobs)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestAgentStatusAtMarksStaleHeartbeatUnhealthy(t *testing.T) {
+	now := time.Now()
+	status := AgentStatusAt(now.Add(-AgentHeartbeatTimeout-time.Second), now)
+
+	if status != AgentStatusUnhealthy {
+		t.Fatalf("expected unhealthy, got %q", status)
+	}
+}
+
+func TestAgentsWithComputedHealthKeepsFreshHeartbeatHealthy(t *testing.T) {
+	now := time.Now()
+	agents := AgentsWithComputedHealth([]Agent{
+		{ID: "worker-1", Status: AgentStatusUnhealthy, LastHeartbeat: now.Add(-time.Second)},
+	}, now)
+
+	if agents[0].Status != AgentStatusHealthy {
+		t.Fatalf("expected healthy, got %q", agents[0].Status)
+	}
+}
+
 func TestRepositoryUpdateDeploymentStatusSuccess(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

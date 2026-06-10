@@ -15,6 +15,7 @@ type DeploymentRepository interface {
 	GetDeployment(ctx context.Context, id string) (*jobs.Deployment, error)
 	GetJobs(ctx context.Context) ([]jobs.Job, error)
 	GetJobsByDeployment(ctx context.Context, deploymentID string) ([]jobs.Job, error)
+	ListAgents(ctx context.Context) ([]jobs.Agent, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, repository DeploymentRepository) {
@@ -25,4 +26,5 @@ func RegisterRoutes(mux *http.ServeMux, repository DeploymentRepository) {
 	mux.HandleFunc("GET /deployments/{id}", getDeploymentHandler(repository))
 	mux.HandleFunc("GET /deployments/{id}/jobs", getDeploymentJobsHandler(repository))
 	mux.HandleFunc("GET /jobs", listJobsHandler(repository))
+	mux.HandleFunc("GET /agents", listAgentsHandler(repository))
 }

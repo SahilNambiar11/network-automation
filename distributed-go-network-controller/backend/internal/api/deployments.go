@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/devices"
+	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
 	"github.com/example/distributed-go-network-controller/backend/internal/validation"
 )
 
@@ -109,6 +111,18 @@ func listJobsHandler(repository DeploymentRepository) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, jobs)
+	}
+}
+
+func listAgentsHandler(repository DeploymentRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agents, err := repository.ListAgents(r.Context())
+		if err != nil {
+			http.Error(w, "failed to get agents", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, jobs.AgentsWithComputedHealth(agents, time.Now()))
 	}
 }
 

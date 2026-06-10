@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,8 +20,11 @@ import (
 
 const jobExecutionTimeout = 5 * time.Second
 const jobLeaseDuration = jobs.DefaultJobLeaseDuration
+const heartbeatInterval = 5 * time.Second
 
 type jobProcessorRepository interface {
+	WorkerTablesReady(ctx context.Context) error
+	UpsertAgentHeartbeat(ctx context.Context, agentID, hostname string, activeJobs int) error
 	ClaimNextPendingJob(ctx context.Context, workerID string) (*jobs.Job, error)
 	ClaimNextPendingJobWithLease(ctx context.Context, workerID string, leaseDuration time.Duration) (*jobs.Job, error)
 	RetryJob(ctx context.Context, jobID string, errMsg string) error
@@ -43,21 +48,39 @@ func main() {
 	log.Printf("worker %q connected to postgres", cfg.WorkerID)
 
 	repository := jobs.NewRepository(database)
+	if err := waitForWorkerTables(ctx, repository, 2*time.Second); err != nil {
+		log.Fatalf("failed waiting for database tables: %v", err)
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = cfg.WorkerID
+	}
+
+	activeJobs := &activeJobCounter{}
+	var background sync.WaitGroup
+	background.Add(1)
+	go heartbeatLoop(ctx, repository, cfg.WorkerID, hostname, activeJobs, heartbeatInterval, &background)
+
 	log.Printf("worker pool starting with concurrency %d", cfg.WorkerConcurrency)
-	RunWorkerPool(ctx, repository, cfg.WorkerID, cfg.WorkerConcurrency)
+	RunWorkerPool(ctx, repository, cfg.WorkerID, cfg.WorkerConcurrency, activeJobs)
+	background.Wait()
 	log.Println("graceful shutdown completed")
 }
 
-func RunWorkerPool(ctx context.Context, repository jobProcessorRepository, workerID string, concurrency int) {
+func RunWorkerPool(ctx context.Context, repository jobProcessorRepository, workerID string, concurrency int, activeJobs *activeJobCounter) {
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	if activeJobs == nil {
+		activeJobs = &activeJobCounter{}
 	}
 
 	jobsCh := make(chan jobs.Job, concurrency*2)
 	var executors sync.WaitGroup
 	for executorID := 1; executorID <= concurrency; executorID++ {
 		executors.Add(1)
-		go executorLoop(ctx, executorID, repository, jobsCh, &executors)
+		go executorLoop(ctx, executorID, repository, jobsCh, activeJobs, &executors)
 	}
 
 	claimLoop(ctx, repository, workerID, jobsCh, 2*time.Second, jobLeaseDuration)
@@ -98,19 +121,73 @@ func claimLoop(ctx context.Context, repository jobProcessorRepository, workerID 
 	}
 }
 
-func executorLoop(ctx context.Context, executorID int, repository jobProcessorRepository, jobsCh <-chan jobs.Job, wg *sync.WaitGroup) {
+func executorLoop(ctx context.Context, executorID int, repository jobProcessorRepository, jobsCh <-chan jobs.Job, activeJobs *activeJobCounter, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("executor %d starting", executorID)
 
 	for job := range jobsCh {
 		log.Printf("executor %d processing job %s", executorID, job.ID)
+		activeJobs.Increment()
 		if err := ProcessJobOnce(ctx, repository, job, jobExecutionTimeout); err != nil {
+			activeJobs.Decrement()
 			log.Printf("executor %d failed to process job %s: %v", executorID, job.ID, err)
 			continue
 		}
+		activeJobs.Decrement()
 		log.Printf("executor %d completed job %s", executorID, job.ID)
 	}
 	log.Printf("executor %d stopping", executorID)
+}
+
+func waitForWorkerTables(ctx context.Context, repository jobProcessorRepository, interval time.Duration) error {
+	log.Println("worker waiting for database tables")
+	for {
+		if err := repository.WorkerTablesReady(ctx); err == nil {
+			log.Println("worker database tables ready")
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func heartbeatLoop(ctx context.Context, repository jobProcessorRepository, workerID string, hostname string, activeJobs *activeJobCounter, interval time.Duration, wg *sync.WaitGroup) {
+	defer wg.Done()
+	log.Printf("heartbeat started for worker %s", workerID)
+
+	for {
+		if err := repository.UpsertAgentHeartbeat(ctx, workerID, hostname, activeJobs.Load()); err != nil {
+			log.Printf("heartbeat update failed for worker %s: %v", workerID, err)
+		} else {
+			log.Printf("heartbeat updated for worker %s with %d active jobs", workerID, activeJobs.Load())
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
+type activeJobCounter struct {
+	value atomic.Int64
+}
+
+func (c *activeJobCounter) Increment() {
+	c.value.Add(1)
+}
+
+func (c *activeJobCounter) Decrement() {
+	c.value.Add(-1)
+}
+
+func (c *activeJobCounter) Load() int {
+	return int(c.value.Load())
 }
 
 func sleepOrDone(ctx context.Context, duration time.Duration) {
