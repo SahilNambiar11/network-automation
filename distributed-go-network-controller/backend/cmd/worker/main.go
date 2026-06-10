@@ -14,6 +14,7 @@ import (
 )
 
 const jobExecutionTimeout = 5 * time.Second
+const jobLeaseDuration = jobs.DefaultJobLeaseDuration
 
 type jobProcessorRepository interface {
 	ClaimNextPendingJob(ctx context.Context, workerID string) (*jobs.Job, error)
@@ -39,7 +40,7 @@ func main() {
 	pollInterval := 2 * time.Second
 	idlePolls := 0
 	for {
-		job, err := repository.ClaimNextPendingJob(ctx, cfg.WorkerID)
+		job, err := repository.ClaimNextPendingJobWithLease(ctx, cfg.WorkerID, jobLeaseDuration)
 		if err != nil {
 			log.Printf("failed to claim pending job: %v", err)
 			time.Sleep(pollInterval)
@@ -62,6 +63,13 @@ func main() {
 }
 
 func ProcessJobOnce(ctx context.Context, repository jobProcessorRepository, job jobs.Job, timeout time.Duration) error {
+	if job.Reclaimed {
+		previousWorker := ""
+		if job.PreviousWorker != nil {
+			previousWorker = *job.PreviousWorker
+		}
+		log.Printf("reclaimed expired job %s previously claimed by %s", job.ID, previousWorker)
+	}
 	log.Printf("claimed job %s for deployment %s on device %s", job.ID, job.DeploymentID, job.DeviceName)
 
 	executionCtx, cancel := context.WithTimeout(ctx, timeout)

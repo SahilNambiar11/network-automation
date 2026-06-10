@@ -82,7 +82,7 @@ func TestRepositoryClaimNextPendingJob(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("WITH next_job AS").
-		WithArgs(JobStatusPending, JobStatusRunning, "worker-1").
+		WithArgs(JobStatusPending, JobStatusRunning, "worker-1", DefaultJobLeaseDuration.Seconds()).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id",
 			"deployment_id",
@@ -97,6 +97,8 @@ func TestRepositoryClaimNextPendingJob(t *testing.T) {
 			"completed_at",
 			"error",
 			"created_at",
+			"previous_status",
+			"previous_claimed_by",
 		}).AddRow(
 			"job-1",
 			"deployment-1",
@@ -111,6 +113,8 @@ func TestRepositoryClaimNextPendingJob(t *testing.T) {
 			sql.NullTime{},
 			sql.NullString{},
 			now,
+			JobStatusPending,
+			sql.NullString{},
 		))
 	mock.ExpectCommit()
 
@@ -139,6 +143,112 @@ func TestRepositoryClaimNextPendingJob(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRepositoryClaimExpiredRunningJob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewRepository(db)
+	now := time.Now()
+	leaseExpiresAt := now.Add(30 * time.Second)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("WITH next_job AS").
+		WithArgs(JobStatusPending, JobStatusRunning, "worker-b", 10.0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"deployment_id",
+			"device_name",
+			"device_type",
+			"status",
+			"attempts",
+			"max_attempts",
+			"claimed_by",
+			"lease_expires_at",
+			"started_at",
+			"completed_at",
+			"error",
+			"created_at",
+			"previous_status",
+			"previous_claimed_by",
+		}).AddRow(
+			"job-1",
+			"deployment-1",
+			"core-router",
+			"router",
+			JobStatusRunning,
+			2,
+			3,
+			sql.NullString{String: "worker-b", Valid: true},
+			sql.NullTime{Time: leaseExpiresAt, Valid: true},
+			sql.NullTime{Time: now, Valid: true},
+			sql.NullTime{},
+			sql.NullString{},
+			now,
+			JobStatusRunning,
+			sql.NullString{String: "worker-a", Valid: true},
+		))
+	mock.ExpectCommit()
+
+	job, err := repository.ClaimNextPendingJobWithLease(context.Background(), "worker-b", 10*time.Second)
+	if err != nil {
+		t.Fatalf("claim expired running job: %v", err)
+	}
+	if job == nil {
+		t.Fatalf("expected claimed job")
+	}
+	if job.ClaimedBy == nil || *job.ClaimedBy != "worker-b" {
+		t.Fatalf("expected claimed_by worker-b, got %#v", job.ClaimedBy)
+	}
+	if !job.Reclaimed {
+		t.Fatalf("expected job to be marked reclaimed")
+	}
+	if job.PreviousWorker == nil || *job.PreviousWorker != "worker-a" {
+		t.Fatalf("expected previous worker worker-a, got %#v", job.PreviousWorker)
+	}
+	if job.Attempts != 2 {
+		t.Fatalf("expected attempts 2, got %d", job.Attempts)
+	}
+	if job.LeaseExpiresAt == nil {
+		t.Fatalf("expected lease_expires_at to be populated")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCanClaimJobByStatusAndLease(t *testing.T) {
+	now := time.Now()
+	expiredLease := now.Add(-time.Minute)
+	unexpiredLease := now.Add(time.Minute)
+
+	tests := []struct {
+		name           string
+		status         string
+		leaseExpiresAt *time.Time
+		want           bool
+	}{
+		{name: "pending job can be claimed", status: JobStatusPending, want: true},
+		{name: "running job with unexpired lease cannot be claimed", status: JobStatusRunning, leaseExpiresAt: &unexpiredLease, want: false},
+		{name: "running job with expired lease can be reclaimed", status: JobStatusRunning, leaseExpiresAt: &expiredLease, want: true},
+		{name: "success job cannot be reclaimed", status: JobStatusSuccess, leaseExpiresAt: &expiredLease, want: false},
+		{name: "failed job cannot be reclaimed", status: JobStatusFailed, leaseExpiresAt: &expiredLease, want: false},
+		{name: "timeout job cannot be reclaimed", status: JobStatusTimeout, leaseExpiresAt: &expiredLease, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := canClaimJob(tt.status, tt.leaseExpiresAt, now)
+			if got != tt.want {
+				t.Fatalf("expected %t, got %t", tt.want, got)
+			}
+		})
 	}
 }
 

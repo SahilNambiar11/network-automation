@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	DefaultJobLeaseDuration = 30 * time.Second
+
 	DeploymentStatusPending = "pending"
 	DeploymentStatusRunning = "running"
 	DeploymentStatusSuccess = "success"
@@ -49,6 +51,8 @@ type Job struct {
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	Error          *string    `json:"error,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+	Reclaimed      bool       `json:"-"`
+	PreviousWorker *string    `json:"-"`
 }
 
 func NewRepository(db *sql.DB) *Repository {
@@ -99,16 +103,22 @@ func (r *Repository) CreateJobsForDeployment(ctx context.Context, deploymentID s
 }
 
 func (r *Repository) ClaimNextPendingJob(ctx context.Context, workerID string) (*Job, error) {
+	return r.ClaimNextPendingJobWithLease(ctx, workerID, DefaultJobLeaseDuration)
+}
+
+func (r *Repository) ClaimNextPendingJobWithLease(ctx context.Context, workerID string, leaseDuration time.Duration) (*Job, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin claim job transaction: %w", err)
 	}
 
+	leaseSeconds := leaseDuration.Seconds()
 	row := tx.QueryRowContext(ctx, `
 		WITH next_job AS (
-			SELECT id
+			SELECT id, status, claimed_by
 			FROM jobs
 			WHERE status = $1
+				OR (status = $2 AND lease_expires_at < now())
 			ORDER BY created_at ASC
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
@@ -117,15 +127,17 @@ func (r *Repository) ClaimNextPendingJob(ctx context.Context, workerID string) (
 		SET status = $2,
 			claimed_by = $3,
 			started_at = now(),
+			lease_expires_at = now() + ($4::double precision * INTERVAL '1 second'),
 			attempts = attempts + 1
 		FROM next_job
 		WHERE jobs.id = next_job.id
 		RETURNING jobs.id, jobs.deployment_id, jobs.device_name, jobs.device_type, jobs.status,
 			jobs.attempts, jobs.max_attempts, jobs.claimed_by, jobs.lease_expires_at,
-			jobs.started_at, jobs.completed_at, jobs.error, jobs.created_at
-	`, JobStatusPending, JobStatusRunning, workerID)
+			jobs.started_at, jobs.completed_at, jobs.error, jobs.created_at,
+			next_job.status, next_job.claimed_by
+	`, JobStatusPending, JobStatusRunning, workerID, leaseSeconds)
 
-	job, err := scanJob(row)
+	job, err := scanClaimedJob(row)
 	if err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
@@ -246,6 +258,17 @@ func deploymentStatusFromCounts(totalJobs, successJobs, failedJobs, runningJobs,
 	default:
 		return DeploymentStatusPending, false
 	}
+}
+
+func canClaimJob(status string, leaseExpiresAt *time.Time, now time.Time) bool {
+	if status == JobStatusPending {
+		return true
+	}
+	if status != JobStatusRunning || leaseExpiresAt == nil {
+		return false
+	}
+
+	return leaseExpiresAt.Before(now)
 }
 
 func (r *Repository) GetDeployments(ctx context.Context) ([]Deployment, error) {
@@ -398,6 +421,47 @@ func scanJob(scanner jobScanner) (Job, error) {
 	job.StartedAt = nullableTime(startedAt)
 	job.CompletedAt = nullableTime(completedAt)
 	job.Error = nullableString(jobError)
+
+	return job, nil
+}
+
+func scanClaimedJob(scanner jobScanner) (Job, error) {
+	var job Job
+	var claimedBy sql.NullString
+	var leaseExpiresAt sql.NullTime
+	var startedAt sql.NullTime
+	var completedAt sql.NullTime
+	var jobError sql.NullString
+	var previousStatus string
+	var previousWorker sql.NullString
+
+	if err := scanner.Scan(
+		&job.ID,
+		&job.DeploymentID,
+		&job.DeviceName,
+		&job.DeviceType,
+		&job.Status,
+		&job.Attempts,
+		&job.MaxAttempts,
+		&claimedBy,
+		&leaseExpiresAt,
+		&startedAt,
+		&completedAt,
+		&jobError,
+		&job.CreatedAt,
+		&previousStatus,
+		&previousWorker,
+	); err != nil {
+		return Job{}, err
+	}
+
+	job.ClaimedBy = nullableString(claimedBy)
+	job.LeaseExpiresAt = nullableTime(leaseExpiresAt)
+	job.StartedAt = nullableTime(startedAt)
+	job.CompletedAt = nullableTime(completedAt)
+	job.Error = nullableString(jobError)
+	job.Reclaimed = previousStatus == JobStatusRunning
+	job.PreviousWorker = nullableString(previousWorker)
 
 	return job, nil
 }

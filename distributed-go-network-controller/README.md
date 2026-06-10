@@ -83,6 +83,20 @@ curl http://localhost:8080/deployments
 curl http://localhost:8080/jobs
 ```
 
+## Test Expired Job Lease Recovery
+
+To manually simulate a worker crash after a job was claimed, expire a running job lease in Postgres:
+
+```sql
+UPDATE jobs
+SET status = 'running',
+    claimed_by = 'dead-worker',
+    lease_expires_at = NOW() - INTERVAL '1 minute'
+WHERE id = '<job_id>';
+```
+
+Another worker can then reclaim the job on its next poll.
+
 ## Scale Workers
 
 ```sh
