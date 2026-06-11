@@ -1,145 +1,242 @@
-# distributed-go-network-controller
+# Distributed Go Network Automation Controller
 
-Phase 1 scaffold for a distributed Go infrastructure automation platform.
+A Go-based infrastructure automation/control-plane project that validates desired network configuration, creates deployments and jobs, and executes them with distributed worker agents. It tracks mock device state for simulated routers, switches, and firewalls, detects configuration drift, and exposes observability through Prometheus, Grafana, and a React dashboard.
+
+The project is designed as a local, demoable distributed systems exercise: PostgreSQL-backed coordination, worker leases, retries, timeouts, heartbeats, drift reports, metrics, dashboards, and a browser UI all run from Docker Compose.
+
+## Features
+
+- YAML-based desired network configuration
+- VLAN, subnet, and firewall rule validation
+- Deployment and job persistence in PostgreSQL
+- Distributed worker agents
+- PostgreSQL-backed job claiming using `FOR UPDATE SKIP LOCKED`
+- Retries and context timeouts
+- Lease-based job recovery
+- Local goroutine worker pool inside each worker process
+- Agent heartbeats and active job tracking
+- Simulated device state storage
+- Drift detection between desired state and actual mock device state
+- Prometheus metrics
+- Grafana dashboard
+- React frontend dashboard
+- Docker Compose local environment
 
 ## Architecture
 
 ```text
-                       +----------------------+
-                       | React + Vite frontend|
-                       | localhost:5173       |
-                       +----------+-----------+
-                                  |
-                                  v
-                       +----------------------+
-                       | Go controller API    |
-                       | localhost:8080       |
-                       | GET /health          |
-                       +----------+-----------+
-                                  |
-                                  v
-                       +----------------------+
-                       | PostgreSQL           |
-                       | localhost:5432       |
-                       +----------+-----------+
-                                  ^
-                                  |
-                       +----------------------+
-                       | Go worker agents     |
-                       | scalable replicas    |
-                       +----------------------+
+                         +--------------------------+
+                         | React Frontend Dashboard |
+                         | http://localhost:5173    |
+                         +------------+-------------+
+                                      |
+                                      v
+                         +--------------------------+
+                         | Go Controller API        |
+                         | http://localhost:8080    |
+                         | /health /deployments     |
+                         | /jobs /devices /drift    |
+                         | /metrics                 |
+                         +------+-----------+-------+
+                                |           |
+                                v           v
+                         +-------------+  Drift detection
+                         | PostgreSQL  |  desired vs actual
+                         | deployments |
+                         | jobs        |
+                         | agents      |
+                         | device_states
+                         +------+------+ 
+                                ^
+                                |
+               +----------------+----------------+
+               |                                 |
+   +-----------+------------+        +-----------+------------+
+   | Go Worker Agent        |        | Go Worker Agent        |
+   | goroutine worker pool  |        | goroutine worker pool  |
+   | job leases + heartbeat |        | job leases + heartbeat |
+   +------------------------+        +------------------------+
+
+                         +--------------------------+
+                         | Prometheus               |
+                         | scrapes controller       |
+                         | http://localhost:9090    |
+                         +------------+-------------+
+                                      |
+                                      v
+                         +--------------------------+
+                         | Grafana Dashboard        |
+                         | http://localhost:3000    |
+                         +--------------------------+
 ```
 
-## Services
+## Core Concepts
 
-- `backend/cmd/controller`: Go HTTP API service on port `8080`.
-- `backend/cmd/worker`: Go worker process with a local goroutine pool for concurrent job execution.
-- `postgres`: PostgreSQL database for future controller state.
-- `frontend`: React + Vite app on port `5173`.
+- **Desired state**: The submitted YAML network configuration containing devices, VLANs, subnets, and firewall rules.
+- **Actual state**: The mock device state stored in PostgreSQL after successful worker deployments.
+- **Deployment**: A persisted desired configuration submission.
+- **Job**: A per-device unit of work created from a deployment.
+- **Controller**: The Go API service that validates configs, creates deployments/jobs, exposes state, generates drift reports, and serves metrics.
+- **Worker**: A Go agent process that claims jobs, executes mock deployments, updates device state, and sends heartbeats.
+- **Lease**: A database-backed claim window that allows stuck running jobs to be recovered by another worker.
+- **Heartbeat**: Periodic worker status and active job reporting stored in PostgreSQL.
+- **Drift detection**: Comparison of desired deployment config against actual mock device state.
+
+## API Endpoints
+
+- `GET /health`
+- `POST /validate`
+- `POST /deployments`
+- `GET /deployments`
+- `GET /jobs`
+- `GET /agents`
+- `GET /devices`
+- `GET /devices/{name}`
+- `POST /devices/{name}/mutate`
+- `GET /drift`
+- `GET /drift/{device}`
+- `GET /drift/summary`
+- `GET /metrics`
 
 ## Run
 
 ```sh
-docker compose up --build
+docker compose down -v
+WORKER_CONCURRENCY=3 docker compose up --build -d --scale worker=2
 ```
 
-Open the frontend at:
+Open:
 
-```text
-http://localhost:5173
-```
+- React dashboard: `http://localhost:5173`
+- Controller API: `http://localhost:8080`
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
 
-## Test Controller Health
-
-```sh
-curl http://localhost:8080/health
-```
-
-Expected response:
-
-```json
-{"status":"ok","service":"controller"}
-```
-
-## Validate Network YAML
-
-```sh
-curl -X POST --data-binary @examples/valid-network.yaml http://localhost:8080/validate
-```
-
-Invalid configs return `200 OK` with structured validation errors. Malformed YAML returns `400 Bad Request`.
-
-## Create A Deployment
-
-```sh
-curl -X POST http://localhost:8080/deployments \
-  --data-binary @examples/valid-network.yaml
-```
-
-Then inspect persisted records:
-
-```sh
-curl http://localhost:8080/deployments
-curl http://localhost:8080/jobs
-```
-
-## Test Expired Job Lease Recovery
-
-To manually simulate a worker crash after a job was claimed, expire a running job lease in Postgres:
-
-```sql
-UPDATE jobs
-SET status = 'running',
-    claimed_by = 'dead-worker',
-    lease_expires_at = NOW() - INTERVAL '1 minute'
-WHERE id = '<job_id>';
-```
-
-Another worker can then reclaim the job on its next poll.
-
-## Scale Workers
-
-```sh
-docker compose up --build --scale worker=3
-```
-
-## Observability
-
-Prometheus is available at:
-
-```text
-http://localhost:9090
-```
-
-Grafana is available at:
-
-```text
-http://localhost:3000
-```
-
-Default Grafana login:
+Grafana default login:
 
 ```text
 admin/admin
 ```
 
-Grafana provisions the Prometheus datasource and the Network Controller dashboard automatically at startup. No manual datasource setup or dashboard import is required.
+## Demo Workflow
+
+Validate YAML:
+
+```sh
+curl -X POST --data-binary @examples/valid-network.yaml http://localhost:8080/validate
+```
+
+Create a deployment:
+
+```sh
+curl -X POST --data-binary @examples/valid-network.yaml http://localhost:8080/deployments
+```
+
+Check jobs:
+
+```sh
+curl http://localhost:8080/jobs
+```
+
+Check devices:
+
+```sh
+curl http://localhost:8080/devices
+```
+
+Check drift:
+
+```sh
+curl http://localhost:8080/drift
+```
+
+Mutate device state to create drift:
+
+```sh
+curl -X POST http://localhost:8080/devices/core-router/mutate \
+  -H "Content-Type: application/json" \
+  -d '{"remove_vlan":10}'
+```
+
+Check drift again:
+
+```sh
+curl http://localhost:8080/drift/core-router
+```
+
+Check metrics:
+
+```sh
+curl http://localhost:8080/metrics | grep -E "deployments_total|jobs_total|devices_with_drift|active_agents"
+```
+
+## Observability
+
+The controller exposes Prometheus metrics at `GET /metrics`. Prometheus scrapes the controller at `controller:8080/metrics`, and Grafana is automatically provisioned with the Prometheus datasource and Network Controller dashboard.
+
+Metrics include deployments, total jobs, job statuses, active agents, unhealthy agents, worker active jobs, devices checked for drift, and devices with drift.
+
+## Frontend
+
+The React dashboard supports:
+
+- Validating and deploying YAML configuration
+- Viewing deployments and jobs
+- Viewing worker agents and heartbeat status
+- Viewing mock device state
+- Mutating device state for drift demos
+- Viewing drift reports and drift summary counts
+- Opening Prometheus and Grafana
+
+The frontend runs at `http://localhost:5173` and proxies API requests to the controller through Vite.
+
+## Testing
+
+Backend:
+
+```sh
+cd backend && go test ./...
+```
+
+Frontend:
+
+```sh
+cd frontend && npm run build
+```
+
+Docker:
+
+```sh
+docker compose build
+```
 
 ## Configuration
 
-The backend reads these environment variables:
+- `DATABASE_URL`: PostgreSQL connection string for controller and workers.
+- `SERVICE_PORT`: Controller HTTP port, defaulted by Compose to `8080`.
+- `WORKER_ID`: Optional worker identifier. If omitted, workers generate one from the environment/container.
+- `WORKER_CONCURRENCY`: Number of goroutine executors inside each worker process. Defaults to `3`.
+- `VITE_PROXY_TARGET`: Frontend development proxy target. Compose sets this to `http://controller:8080`.
 
-- `DATABASE_URL`
-- `SERVICE_PORT`
-- `WORKER_ID`
-- `WORKER_CONCURRENCY` defaults to `3`
+## Project Status
 
-## Next Phases
+Completed:
 
-- [ ] Add database migrations.
-- [ ] Implement device inventory models.
-- [ ] Add YAML parsing and validation.
-- [ ] Build job creation and claiming.
-- [ ] Add worker job execution flow.
-- [ ] Implement drift detection.
-- [ ] Expand dashboard data views.
+- Validation
+- Persistence
+- Workers
+- Retries and timeouts
+- Lease recovery
+- Worker pool
+- Heartbeats
+- Device state
+- Drift detection
+- Prometheus and Grafana
+- React dashboard
+
+Future improvements:
+
+- Automatic drift remediation/reconciliation loop
+- GitHub Actions CI
+- Better Grafana dashboard panels
+- Real network device adapter interface
