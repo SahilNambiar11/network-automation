@@ -1,0 +1,268 @@
+{
+  "metadata": {
+    "started_at": "2026-06-11T17:36:35.047935+00:00",
+    "worker_concurrency": 3,
+    "worker_counts": [
+      1,
+      2,
+      4
+    ],
+    "job_sizes": [
+      10,
+      50,
+      100,
+      500
+    ],
+    "notes": [
+      "Measurements are from the existing implementation with mock device deployments.",
+      "The implementation has deterministic failure and timeout injection by device name.",
+      "It does not include a transient-failure mode that later succeeds without changing backend behavior."
+    ],
+    "finished_at": "2026-06-11T17:39:58.890278+00:00"
+  },
+  "throughput": [
+    {
+      "worker_count": 1,
+      "job_count": 10,
+      "deployment_id": "89056b01-1de9-4c82-a6fa-e575e0770e7e",
+      "completion_seconds": 2.075,
+      "jobs_per_second": 4.819,
+      "average_job_latency_ms": 22.514,
+      "p95_job_latency_ms": 35.692,
+      "success_jobs": 10,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 1,
+      "job_count": 50,
+      "deployment_id": "b953b82b-b836-4741-a1a8-cdc55f580f2b",
+      "completion_seconds": 2.349,
+      "jobs_per_second": 21.288,
+      "average_job_latency_ms": 36.955,
+      "p95_job_latency_ms": 47.736,
+      "success_jobs": 50,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 1,
+      "job_count": 100,
+      "deployment_id": "6a7ea213-bd86-4ee9-9f29-a293d4553db7",
+      "completion_seconds": 2.344,
+      "jobs_per_second": 42.669,
+      "average_job_latency_ms": 38.881,
+      "p95_job_latency_ms": 46.982,
+      "success_jobs": 100,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 1,
+      "job_count": 500,
+      "deployment_id": "091192ab-3000-463c-8086-63bdc6e52be6",
+      "completion_seconds": 4.49,
+      "jobs_per_second": 111.349,
+      "average_job_latency_ms": 44.745,
+      "p95_job_latency_ms": 54.207,
+      "success_jobs": 500,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 2,
+      "job_count": 10,
+      "deployment_id": "6663421f-4c7b-4ec0-9a4b-4c84cb319fdd",
+      "completion_seconds": 2.099,
+      "jobs_per_second": 4.764,
+      "average_job_latency_ms": 23.36,
+      "p95_job_latency_ms": 35.479,
+      "success_jobs": 10,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 2,
+      "job_count": 50,
+      "deployment_id": "3e8439a5-f8bc-4d0e-b700-057d5cc1a179",
+      "completion_seconds": 2.096,
+      "jobs_per_second": 23.853,
+      "average_job_latency_ms": 33.802,
+      "p95_job_latency_ms": 45.113,
+      "success_jobs": 50,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 2,
+      "job_count": 100,
+      "deployment_id": "d83df940-52d2-4639-8858-14f735306319",
+      "completion_seconds": 2.085,
+      "jobs_per_second": 47.964,
+      "average_job_latency_ms": 37.059,
+      "p95_job_latency_ms": 44.426,
+      "success_jobs": 100,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 2,
+      "job_count": 500,
+      "deployment_id": "de9dbe7f-1194-41ad-92ff-7c1ab8011ce7",
+      "completion_seconds": 3.471,
+      "jobs_per_second": 144.033,
+      "average_job_latency_ms": 45.198,
+      "p95_job_latency_ms": 54.802,
+      "success_jobs": 500,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 4,
+      "job_count": 10,
+      "deployment_id": "c9c0a98a-3dd1-4e40-a5d2-55a308a7b0c0",
+      "completion_seconds": 2.055,
+      "jobs_per_second": 4.865,
+      "average_job_latency_ms": 26.548,
+      "p95_job_latency_ms": 40.487,
+      "success_jobs": 10,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 4,
+      "job_count": 50,
+      "deployment_id": "0684fe58-821f-4ef9-a32e-b267cefaa710",
+      "completion_seconds": 2.076,
+      "jobs_per_second": 24.09,
+      "average_job_latency_ms": 33.811,
+      "p95_job_latency_ms": 45.59,
+      "success_jobs": 50,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 4,
+      "job_count": 100,
+      "deployment_id": "42308dc0-f351-48a2-b19b-789df3e0d457",
+      "completion_seconds": 2.093,
+      "jobs_per_second": 47.775,
+      "average_job_latency_ms": 34.1,
+      "p95_job_latency_ms": 44.776,
+      "success_jobs": 100,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    },
+    {
+      "worker_count": 4,
+      "job_count": 500,
+      "deployment_id": "6a737e0d-adeb-49c3-aab1-f3865499a221",
+      "completion_seconds": 2.646,
+      "jobs_per_second": 188.98,
+      "average_job_latency_ms": 46.479,
+      "p95_job_latency_ms": 56.419,
+      "success_jobs": 500,
+      "failed_jobs": 0,
+      "timeout_jobs": 0
+    }
+  ],
+  "worker_scaling": [
+    {
+      "job_count": 10,
+      "one_worker_seconds": 2.075,
+      "four_worker_seconds": 2.055,
+      "completion_time_improvement_percent": 0.96,
+      "one_worker_jobs_per_second": 4.819,
+      "four_worker_jobs_per_second": 4.865,
+      "throughput_improvement_percent": 0.95
+    },
+    {
+      "job_count": 50,
+      "one_worker_seconds": 2.349,
+      "four_worker_seconds": 2.076,
+      "completion_time_improvement_percent": 11.62,
+      "one_worker_jobs_per_second": 21.288,
+      "four_worker_jobs_per_second": 24.09,
+      "throughput_improvement_percent": 13.16
+    },
+    {
+      "job_count": 100,
+      "one_worker_seconds": 2.344,
+      "four_worker_seconds": 2.093,
+      "completion_time_improvement_percent": 10.71,
+      "one_worker_jobs_per_second": 42.669,
+      "four_worker_jobs_per_second": 47.775,
+      "throughput_improvement_percent": 11.97
+    },
+    {
+      "job_count": 500,
+      "one_worker_seconds": 4.49,
+      "four_worker_seconds": 2.646,
+      "completion_time_improvement_percent": 41.07,
+      "one_worker_jobs_per_second": 111.349,
+      "four_worker_jobs_per_second": 188.98,
+      "throughput_improvement_percent": 69.72
+    }
+  ],
+  "lease_recovery": {
+    "deployment_id": "320c87fc-e083-48fd-a58a-cac78544c348",
+    "job_count": 6,
+    "worker_count": 1,
+    "running_jobs_at_worker_kill": 6,
+    "claimed_jobs_at_worker_kill": 6,
+    "recovered_jobs": 6,
+    "recovery_seconds": 51.094,
+    "completed_after_worker_failure": 6,
+    "completion_after_failure_percent": 100.0,
+    "success_jobs": 0,
+    "timeout_jobs": 6,
+    "note": "Lease recovery uses timeout-named mock devices so jobs remain running long enough to abandon and reclaim without changing backend behavior."
+  },
+  "retry_timeout": {
+    "deployment_id": "29167508-6b64-4009-93e8-9bc465248aa4",
+    "job_count": 20,
+    "success_jobs": 10,
+    "failed_jobs": 5,
+    "timeout_jobs": 5,
+    "retried_jobs": 10,
+    "retried_successes": 0,
+    "retry_success_rate_percent": 0.0,
+    "final_deployment_success_percent": 50.0,
+    "completion_seconds": 27.186,
+    "note": "Existing mock failure/timeout injection is deterministic by device name; retried fail/timeout jobs do not later become successful without backend changes."
+  },
+  "drift_accuracy": {
+    "deployment_id": "c52f560c-86ea-45bf-811d-a135d471d1c3",
+    "device_name": "core-router",
+    "drift_items_injected": 2,
+    "drift_items_detected": 2,
+    "detection_accuracy_percent": 100.0,
+    "missing_vlans": [
+      10
+    ],
+    "missing_firewall_rules_count": 1,
+    "raw_report": {
+      "device_name": "core-router",
+      "drift": true,
+      "missing_vlans": [
+        10
+      ],
+      "missing_firewall_rules": [
+        {
+          "source": "guest",
+          "destination": "engineering",
+          "port": 22,
+          "action": "deny"
+        }
+      ]
+    }
+  },
+  "heartbeat_monitoring": {
+    "worker_count": 2,
+    "sample_window_seconds": 16.086,
+    "average_heartbeat_interval_seconds": 5.007,
+    "unhealthy_detection_delay_seconds": 14.017,
+    "unhealthy_agents_reported": 2,
+    "agent_availability_reporting_accuracy_percent": 100.0
+  }
+}
