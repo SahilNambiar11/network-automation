@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/devices"
+	"github.com/example/distributed-go-network-controller/backend/internal/drift"
 	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
 )
 
@@ -131,6 +132,7 @@ type fakeDeploymentRepository struct {
 	jobsCreated            int
 	agents                 []jobs.Agent
 	deviceStates           map[string]jobs.DeviceState
+	driftReports           []drift.DriftReport
 }
 
 func (r *fakeDeploymentRepository) CreateDeployment(ctx context.Context, rawConfig string) (string, error) {
@@ -206,4 +208,18 @@ func (r *fakeDeploymentRepository) UpsertDeviceState(ctx context.Context, device
 		UpdatedAt:    existing.UpdatedAt,
 	}
 	return nil
+}
+
+func (r *fakeDeploymentRepository) GenerateDeviceDrift(ctx context.Context, deviceName string) (*drift.DriftReport, error) {
+	for _, report := range r.driftReports {
+		if report.DeviceName == deviceName {
+			return &report, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (r *fakeDeploymentRepository) GenerateAllDriftReports(ctx context.Context) ([]drift.DriftReport, error) {
+	return r.driftReports, nil
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/devices"
+	"github.com/example/distributed-go-network-controller/backend/internal/drift"
 	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
 )
 
@@ -19,6 +20,8 @@ type DeploymentRepository interface {
 	GetDeviceState(ctx context.Context, deviceName string) (*jobs.DeviceState, error)
 	ListDeviceStates(ctx context.Context) ([]jobs.DeviceState, error)
 	UpsertDeviceState(ctx context.Context, deviceName string, deviceType string, actualConfig []byte) error
+	GenerateDeviceDrift(ctx context.Context, deviceName string) (*drift.DriftReport, error)
+	GenerateAllDriftReports(ctx context.Context) ([]drift.DriftReport, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, repository DeploymentRepository) {
@@ -33,4 +36,7 @@ func RegisterRoutes(mux *http.ServeMux, repository DeploymentRepository) {
 	mux.HandleFunc("GET /devices", listDevicesHandler(repository))
 	mux.HandleFunc("GET /devices/{name}", getDeviceHandler(repository))
 	mux.HandleFunc("POST /devices/{name}/mutate", mutateDeviceHandler(repository))
+	mux.HandleFunc("GET /drift", listDriftHandler(repository))
+	mux.HandleFunc("GET /drift/summary", driftSummaryHandler(repository))
+	mux.HandleFunc("GET /drift/{device}", getDeviceDriftHandler(repository))
 }

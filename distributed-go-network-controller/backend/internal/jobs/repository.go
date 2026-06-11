@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/example/distributed-go-network-controller/backend/internal/devices"
+	"github.com/example/distributed-go-network-controller/backend/internal/drift"
 )
 
 const (
@@ -205,6 +207,77 @@ func (r *Repository) ListDeviceStates(ctx context.Context) ([]DeviceState, error
 	}
 
 	return states, nil
+}
+
+func (r *Repository) GenerateDeviceDrift(ctx context.Context, deviceName string) (*drift.DriftReport, error) {
+	state, err := r.GetDeviceState(ctx, deviceName)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, nil
+	}
+
+	report, err := r.generateDeviceDriftFromState(ctx, *state)
+	if err != nil {
+		return nil, err
+	}
+
+	return &report, nil
+}
+
+func (r *Repository) GenerateAllDriftReports(ctx context.Context) ([]drift.DriftReport, error) {
+	states, err := r.ListDeviceStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	reports := make([]drift.DriftReport, 0, len(states))
+	for _, state := range states {
+		report, err := r.generateDeviceDriftFromState(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, report)
+	}
+
+	return reports, nil
+}
+
+func (r *Repository) generateDeviceDriftFromState(ctx context.Context, state DeviceState) (drift.DriftReport, error) {
+	log.Printf("drift check started for device %s", state.DeviceName)
+
+	var actualConfig map[string]any
+	if err := json.Unmarshal(state.ActualConfig, &actualConfig); err != nil {
+		return drift.DriftReport{}, fmt.Errorf("parse actual config for device %s: %w", state.DeviceName, err)
+	}
+
+	deploymentID, ok := actualConfig["last_deployment_id"].(string)
+	if !ok || deploymentID == "" {
+		return drift.DriftReport{}, fmt.Errorf("actual config for device %s is missing last_deployment_id", state.DeviceName)
+	}
+
+	deployment, err := r.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return drift.DriftReport{}, err
+	}
+	if deployment == nil {
+		return drift.DriftReport{}, fmt.Errorf("deployment %s for device %s not found", deploymentID, state.DeviceName)
+	}
+
+	desired, err := devices.ParseYAML([]byte(deployment.RawConfig))
+	if err != nil {
+		return drift.DriftReport{}, fmt.Errorf("parse desired config for deployment %s: %w", deploymentID, err)
+	}
+
+	report := drift.GenerateDriftReport(desired, actualConfig, state.DeviceName)
+	if report.Drift {
+		log.Printf("drift detected for device %s", state.DeviceName)
+	} else {
+		log.Printf("no drift detected for device %s", state.DeviceName)
+	}
+
+	return report, nil
 }
 
 func AgentsWithComputedHealth(agents []Agent, now time.Time) []Agent {
