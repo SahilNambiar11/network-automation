@@ -103,6 +103,28 @@ Another worker can then reclaim the job on its next poll.
 docker compose up --build --scale worker=3
 ```
 
+## Observability
+
+Prometheus is available at:
+
+```text
+http://localhost:9090
+```
+
+Grafana is available at:
+
+```text
+http://localhost:3000
+```
+
+Default Grafana login:
+
+```text
+admin/admin
+```
+
+Grafana provisions the Prometheus datasource and the Network Controller dashboard automatically at startup. No manual datasource setup or dashboard import is required.
+
 ## Configuration
 
 The backend reads these environment variables:
