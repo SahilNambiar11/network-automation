@@ -48,5 +48,14 @@ services:
     depends_on:
       - controller
 
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - controller
+
 volumes:
   postgres_data:

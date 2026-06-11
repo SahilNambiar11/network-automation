@@ -10,6 +10,9 @@ import (
 	"github.com/example/distributed-go-network-controller/backend/internal/config"
 	"github.com/example/distributed-go-network-controller/backend/internal/db"
 	"github.com/example/distributed-go-network-controller/backend/internal/jobs"
+	"github.com/example/distributed-go-network-controller/backend/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -30,9 +33,11 @@ func main() {
 	log.Println("database migrations are up to date")
 
 	repository := jobs.NewRepository(database)
+	prometheus.MustRegister(metrics.NewCollector(repository))
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, repository)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	addr := ":" + cfg.ServicePort
 	log.Printf("controller listening on %s", addr)
