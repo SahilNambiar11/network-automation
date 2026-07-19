@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: distributed-go-network-controller
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: distributed-go-network-controller
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+  dashboard.yml: |
+    apiVersion: 1
+    providers:
+      - name: network-controller
+        orgId: 1
+        folder: Network Controller
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: distributed-go-network-controller
+data:
+  network-controller.json: |
+    {
+      "title": "Network Controller",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "panels": [
+        {"type":"stat","title":"Deployments","gridPos":{"x":0,"y":0,"w":6,"h":4},"targets":[{"expr":"deployments_total"}]},
+        {"type":"stat","title":"Pending Jobs","gridPos":{"x":6,"y":0,"w":6,"h":4},"targets":[{"expr":"jobs_pending_total"}]},
+        {"type":"stat","title":"Active Agents","gridPos":{"x":12,"y":0,"w":6,"h":4},"targets":[{"expr":"active_agents"}]},
+        {"type":"stat","title":"Devices With Drift","gridPos":{"x":18,"y":0,"w":6,"h":4},"targets":[{"expr":"devices_with_drift"}]},
+        {"type":"timeseries","title":"Job States","gridPos":{"x":0,"y":4,"w":12,"h":8},"targets":[{"expr":"jobs_success_total","legendFormat":"success"},{"expr":"jobs_failed_total","legendFormat":"failed"},{"expr":"jobs_timeout_total","legendFormat":"timeout"},{"expr":"jobs_running_total","legendFormat":"running"},{"expr":"jobs_pending_total","legendFormat":"pending"}]},
+        {"type":"timeseries","title":"Worker Active Jobs","gridPos":{"x":12,"y":4,"w":12,"h":8},"targets":[{"expr":"worker_active_jobs"}]}
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: distributed-go-network-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/part-of: distributed-go-network-controller
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+            - name: grafana-provisioning
+              mountPath: /etc/grafana/provisioning/datasources/datasource.yml
+              subPath: datasource.yml
+            - name: grafana-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/dashboard.yml
+              subPath: dashboard.yml
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+      volumes:
+        - name: grafana-data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: grafana-provisioning
+          configMap:
+            name: grafana-provisioning
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: distributed-go-network-controller
+spec:
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

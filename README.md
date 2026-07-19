@@ -2,7 +2,7 @@
 
 A Go-based infrastructure automation/control-plane project that validates desired network configuration, creates deployments and jobs, and executes them with distributed worker agents. It tracks mock device state for simulated routers, switches, and firewalls, detects configuration drift, and exposes observability through Prometheus, Grafana, and a React dashboard.
 
-The project is designed as a local, demoable distributed systems exercise: PostgreSQL-backed coordination, worker leases, retries, timeouts, heartbeats, drift reports, metrics, dashboards, and a browser UI all run from Docker Compose.
+The project is designed as a demoable distributed systems exercise: PostgreSQL-backed coordination, worker leases, retries, timeouts, heartbeats, drift reports, metrics, dashboards, and a browser UI all run locally from Docker Compose. Kubernetes is also supported as an optional production-style runtime layer for container orchestration, health checks, rolling deploys, service discovery, and worker replica scaling.
 
 ## Features
 
@@ -21,6 +21,7 @@ The project is designed as a local, demoable distributed systems exercise: Postg
 - Grafana dashboard
 - React frontend dashboard
 - Docker Compose local environment
+- Optional Kubernetes deployment with scalable worker pods
 
 ## Architecture
 
@@ -117,6 +118,73 @@ Grafana default login:
 ```text
 admin/admin
 ```
+
+## Kubernetes
+
+Kubernetes manifests live in `deploy/kubernetes`. They are an optional production-style deployment path; Docker Compose remains the easiest local development workflow.
+
+The Kubernetes deployment intentionally preserves the existing distributed systems design. Worker pods can be scaled as replicas, but per-device job scheduling, `FOR UPDATE SKIP LOCKED` claiming, leases, retries, heartbeats, drift detection, and deployment lifecycle remain inside the Go application and PostgreSQL.
+
+Kubernetes is used for:
+
+- Running the controller, worker, frontend, PostgreSQL, Prometheus, and Grafana containers
+- Restarting crashed pods
+- Service discovery and in-cluster networking
+- ConfigMaps and Secrets
+- Liveness, readiness, and startup probes
+- Scaling worker pod replicas
+
+Kubernetes is not used as the job scheduler. The workers still compete for application jobs through PostgreSQL.
+
+Build local images:
+
+```sh
+docker build -t distributed-go-network-controller/controller:latest -f backend/Dockerfile.controller backend
+docker build -t distributed-go-network-controller/worker:latest -f backend/Dockerfile.worker backend
+docker build -t distributed-go-network-controller/frontend:latest -f frontend/Dockerfile frontend
+```
+
+Apply the manifests:
+
+```sh
+kubectl apply -k deploy/kubernetes
+kubectl -n network-controller get pods
+```
+
+Scale workers:
+
+```sh
+kubectl -n network-controller scale deployment/worker --replicas=5
+```
+
+Port-forward the controller and verify the system:
+
+```sh
+kubectl -n network-controller port-forward svc/controller 8080:8080
+curl http://localhost:8080/health
+curl -X POST --data-binary @examples/many-devices.yaml http://localhost:8080/deployments
+curl http://localhost:8080/jobs
+curl http://localhost:8080/agents
+```
+
+Prometheus can be checked with:
+
+```sh
+kubectl -n network-controller port-forward svc/prometheus 9090:9090
+```
+
+Useful Prometheus queries:
+
+- `up`
+- `deployments_total`
+- `jobs_total`
+- `jobs_success_total`
+- `jobs_pending_total`
+- `active_agents`
+- `worker_active_jobs`
+- `devices_with_drift`
+
+See `deploy/kubernetes/README.md` for image, rollout, port-forwarding, and production notes.
 
 ## Demo Workflow
 
@@ -233,10 +301,12 @@ Completed:
 - Drift detection
 - Prometheus and Grafana
 - React dashboard
+- Optional Kubernetes deployment
+- Graceful worker shutdown for pod termination
 
 Future improvements:
 
 - Automatic drift remediation/reconciliation loop
 - GitHub Actions CI
-- Better Grafana dashboard panels
+- Horizontal Pod Autoscaling from queue depth or custom Prometheus metrics
 - Real network device adapter interface

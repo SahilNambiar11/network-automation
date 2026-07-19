@@ -215,13 +215,12 @@ func TestClaimLoopRespectsContextCancellation(t *testing.T) {
 }
 
 func TestExecutorStopsWhenJobsChannelCloses(t *testing.T) {
-	ctx := context.Background()
 	repository := newFakeJobProcessorRepository()
 	jobsCh := make(chan jobs.Job)
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	go executorLoop(ctx, 1, repository, jobsCh, &activeJobCounter{}, &wg)
+	go executorLoop(1, repository, jobsCh, &activeJobCounter{}, &wg)
 	close(jobsCh)
 
 	done := make(chan struct{})
@@ -234,6 +233,22 @@ func TestExecutorStopsWhenJobsChannelCloses(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("expected executor to stop when jobs channel closes")
+	}
+}
+
+func TestRunWorkerPoolDrainsClaimedJobAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repository := newFakeJobProcessorRepository(fakeJob("job-1", "core-router", "router", 3))
+	repository.cancelAfterFirstClaim = cancel
+
+	RunWorkerPool(ctx, repository, "worker-1", 1, &activeJobCounter{})
+
+	job := repository.job("job-1")
+	if job.Status != jobs.JobStatusSuccess {
+		t.Fatalf("expected claimed job to finish during shutdown, got %q", job.Status)
+	}
+	if job.Attempts != 1 {
+		t.Fatalf("expected one attempt, got %d", job.Attempts)
 	}
 }
 
@@ -277,13 +292,14 @@ func fakeJob(id string, deviceName string, deviceType string, maxAttempts int) j
 }
 
 type fakeJobProcessorRepository struct {
-	mu                  sync.Mutex
-	jobs                map[string]jobs.Job
-	deployments         map[string]jobs.Deployment
-	deviceStates        map[string]jobs.DeviceState
-	completed           int
-	completionTarget    int
-	cancelWhenCompleted context.CancelFunc
+	mu                    sync.Mutex
+	jobs                  map[string]jobs.Job
+	deployments           map[string]jobs.Deployment
+	deviceStates          map[string]jobs.DeviceState
+	completed             int
+	completionTarget      int
+	cancelWhenCompleted   context.CancelFunc
+	cancelAfterFirstClaim context.CancelFunc
 }
 
 func newFakeJobProcessorRepository(jobsList ...jobs.Job) *fakeJobProcessorRepository {
@@ -345,6 +361,10 @@ func (r *fakeJobProcessorRepository) ClaimNextPendingJobWithLease(ctx context.Co
 		job.StartedAt = &now
 		job.Attempts++
 		r.jobs[job.ID] = job
+		if r.cancelAfterFirstClaim != nil {
+			r.cancelAfterFirstClaim()
+			r.cancelAfterFirstClaim = nil
+		}
 		return &job, nil
 	}
 

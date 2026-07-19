@@ -39,6 +39,14 @@ type jobProcessorRepository interface {
 func main() {
 	cfg := config.Load()
 
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		if err := runHealthcheck(cfg); err != nil {
+			log.Printf("worker healthcheck failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	log.Printf("worker starting with id %q", cfg.WorkerID)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -72,6 +80,19 @@ func main() {
 	log.Println("graceful shutdown completed")
 }
 
+func runHealthcheck(cfg config.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	database, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer database.Close()
+
+	return jobs.NewRepository(database).WorkerTablesReady(ctx)
+}
+
 func RunWorkerPool(ctx context.Context, repository jobProcessorRepository, workerID string, concurrency int, activeJobs *activeJobCounter) {
 	if concurrency < 1 {
 		concurrency = 1
@@ -84,7 +105,7 @@ func RunWorkerPool(ctx context.Context, repository jobProcessorRepository, worke
 	var executors sync.WaitGroup
 	for executorID := 1; executorID <= concurrency; executorID++ {
 		executors.Add(1)
-		go executorLoop(ctx, executorID, repository, jobsCh, activeJobs, &executors)
+		go executorLoop(executorID, repository, jobsCh, activeJobs, &executors)
 	}
 
 	claimLoop(ctx, repository, workerID, jobsCh, 2*time.Second, jobLeaseDuration)
@@ -125,14 +146,14 @@ func claimLoop(ctx context.Context, repository jobProcessorRepository, workerID 
 	}
 }
 
-func executorLoop(ctx context.Context, executorID int, repository jobProcessorRepository, jobsCh <-chan jobs.Job, activeJobs *activeJobCounter, wg *sync.WaitGroup) {
+func executorLoop(executorID int, repository jobProcessorRepository, jobsCh <-chan jobs.Job, activeJobs *activeJobCounter, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("executor %d starting", executorID)
 
 	for job := range jobsCh {
 		log.Printf("executor %d processing job %s", executorID, job.ID)
 		activeJobs.Increment()
-		if err := ProcessJobOnce(ctx, repository, job, jobExecutionTimeout); err != nil {
+		if err := ProcessJobOnce(context.Background(), repository, job, jobExecutionTimeout); err != nil {
 			activeJobs.Decrement()
 			log.Printf("executor %d failed to process job %s: %v", executorID, job.ID, err)
 			continue

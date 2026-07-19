@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/part-of: distributed-go-network-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: controller
+        app.kubernetes.io/part-of: distributed-go-network-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: controller
+          image: distributed-go-network-controller/controller:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVICE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: network-controller-config
+                  key: SERVICE_PORT
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: network-controller-secrets
+                  key: DATABASE_URL
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 18
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/part-of: distributed-go-network-controller
+spec:
+  selector:
+    app.kubernetes.io/name: controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
